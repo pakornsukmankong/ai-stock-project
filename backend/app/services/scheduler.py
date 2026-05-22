@@ -35,8 +35,8 @@ class AnalysisScheduler:
 
     async def run_analysis_cycle(self) -> None:
         """Run one complete analysis cycle for all active stocks."""
-        # Skip if market is closed
-        if not is_market_open(include_extended=True):
+        # Skip if market is closed (only run during regular hours 9:30 AM - 4:00 PM ET)
+        if not is_market_open(include_extended=False):
             status = get_market_status()
             print(f"[{datetime.now(timezone.utc)}] Market closed ({status['reason']}). Skipping analysis.")
             return
