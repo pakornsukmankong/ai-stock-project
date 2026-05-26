@@ -5,6 +5,7 @@ from contextlib import asynccontextmanager
 
 from app.api import user, watchlist, alerts, analysis, market, search
 from app.services.scheduler import AnalysisScheduler
+from app.services.daily_briefing import DailyBriefingService
 from app.services.cleanup import cleanup_old_alerts
 from app.core.config import get_settings
 from app.core.scheduler_instance import scheduler
@@ -35,6 +36,17 @@ async def lifespan(app: FastAPI):
                 id="cleanup_old_alerts",
                 replace_existing=True,
             )
+            # Daily briefing: runs at 8:30 AM ET (12:30 UTC) every weekday
+            daily_briefing = DailyBriefingService()
+            scheduler.add_job(
+                daily_briefing.send_daily_briefings,
+                "cron",
+                hour=12,
+                minute=30,
+                day_of_week="mon-fri",
+                id="daily_briefing",
+                replace_existing=True,
+            )
             scheduler.add_job(
                 api_limiter.cleanup,
                 "interval",
@@ -46,6 +58,7 @@ async def lifespan(app: FastAPI):
             monitor.set_scheduler_running(True)
             print(f"Scheduler started: running every {settings.analysis_interval_minutes} minutes")
             print("Cleanup job: runs every 6 hours (retention: 7 days)")
+            print("Daily briefing: runs at 8:30 AM ET (Mon-Fri)")
         except Exception as e:
             monitor.log_error("startup", f"Scheduler failed to start: {e}")
             print(f"Warning: Scheduler failed to start: {e}")
