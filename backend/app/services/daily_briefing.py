@@ -17,13 +17,14 @@ class DailyBriefingService:
 
     SYSTEM_PROMPT = """You are a concise stock news analyst.
 Given recent news headlines for stocks in a watchlist, provide a brief daily news briefing.
+You MUST cover ALL stocks listed — do not skip any.
 For each stock:
 - Summarize the most important news in 1-2 sentences
 - Give sentiment: 🟢 Bullish / 🟡 Neutral / 🔴 Bearish
 - Note any catalysts or risks
+- If no news available, state "No major news" and give a neutral outlook
 
-Keep the total response under 400 words. Be direct and actionable.
-If no significant news, say "No major news" for that stock."""
+Keep each stock to 2-3 lines max. Be direct and actionable."""
 
     def __init__(self) -> None:
         self.settings = get_settings()
@@ -131,15 +132,11 @@ If no significant news, say "No major news" for that stock."""
         if not symbols:
             return
 
-        # Fetch news for all stocks
+        # Fetch news for all stocks (include even if no news)
         all_news: dict[str, list[str]] = {}
         for symbol in symbols:
             news = await self._fetch_stock_news(symbol)
-            if news:
-                all_news[symbol] = news
-
-        if not all_news:
-            return
+            all_news[symbol] = news if news else ["No recent news found"]
 
         # Generate AI briefing from news
         briefing = await self._generate_news_briefing(all_news)
@@ -220,7 +217,7 @@ If no significant news, say "No major news" for that stock."""
                     {"role": "system", "content": self.SYSTEM_PROMPT},
                     {"role": "user", "content": user_message},
                 ],
-                max_tokens=500,
+                max_tokens=5000,
                 temperature=0.3,
             )
 
