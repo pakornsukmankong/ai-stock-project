@@ -11,6 +11,9 @@ const jetbrainsMono = JetBrains_Mono({
 export const metadata: Metadata = {
   title: "AI Stock Alert",
   description: "AI-assisted stock alert platform with LINE notifications",
+  icons: {
+    icon: "/icon.svg",
+  },
 };
 
 export default function RootLayout({

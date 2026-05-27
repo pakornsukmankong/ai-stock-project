@@ -2,7 +2,7 @@
 
 import { usePathname, useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
-import { Activity, BarChart3, Bell, Settings, LogOut } from "lucide-react";
+import { Activity, BarChart3, Bell, Settings, LogOut, Target } from "lucide-react";
 
 export function Sidebar() {
   const pathname = usePathname();
@@ -33,6 +33,12 @@ export function Sidebar() {
             label="Alerts"
             isActive={pathname === "/alerts"}
             onClick={() => router.push("/alerts")}
+          />
+          <NavIcon
+            icon={<Target className="h-5 w-5" />}
+            label="Performance"
+            isActive={pathname === "/performance"}
+            onClick={() => router.push("/performance")}
           />
           <NavIcon
             icon={<Settings className="h-5 w-5" />}

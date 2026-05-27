@@ -1,4 +1,5 @@
 from datetime import datetime, timezone, date
+from typing import Optional
 import httpx
 from openai import AsyncOpenAI
 from app.core.config import get_settings
@@ -198,7 +199,7 @@ If no significant news, say "No major news" for that stock."""
         except Exception:
             return []
 
-    async def _generate_news_briefing(self, all_news: dict[str, list[str]]) -> str | None:
+    async def _generate_news_briefing(self, all_news: dict[str, list[str]]) -> Optional[str]:
         """Generate AI news briefing from collected headlines."""
         try:
             news_text = ""

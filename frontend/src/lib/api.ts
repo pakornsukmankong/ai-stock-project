@@ -77,6 +77,9 @@ export const alertsApi = {
 
   getStats: () =>
     apiRequest<{ signals_today: number }>("/alerts/stats"),
+
+  getPerformance: () =>
+    apiRequest<PerformanceStats>("/alerts/performance"),
 };
 
 // Market API
@@ -168,4 +171,27 @@ export interface StockSearchResult {
   name: string;
   exchange: string;
   type: string;
+}
+
+export interface PerformanceAlert {
+  stock_symbol: string;
+  alert_price: number | null;
+  price_after_1d: number | null;
+  price_after_3d: number | null;
+  price_after_7d: number | null;
+  return_1d: number | null;
+  return_3d: number | null;
+  return_7d: number | null;
+  is_successful: boolean | null;
+  sent_at: string;
+  confidence: string;
+}
+
+export interface PerformanceStats {
+  total_alerts: number;
+  tracked: number;
+  successful: number;
+  win_rate: number;
+  avg_return_7d: number;
+  alerts: PerformanceAlert[];
 }

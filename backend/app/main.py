@@ -6,6 +6,7 @@ from contextlib import asynccontextmanager
 from app.api import user, watchlist, alerts, analysis, market, search
 from app.services.scheduler import AnalysisScheduler
 from app.services.daily_briefing import DailyBriefingService
+from app.services.performance_tracker import PerformanceTracker
 from app.services.cleanup import cleanup_old_alerts
 from app.core.config import get_settings
 from app.core.scheduler_instance import scheduler
@@ -45,6 +46,17 @@ async def lifespan(app: FastAPI):
                 minute=30,
                 day_of_week="mon-fri",
                 id="daily_briefing",
+                replace_existing=True,
+            )
+            # Performance tracker: runs at 10:00 PM ET (02:00 UTC) every weekday
+            perf_tracker = PerformanceTracker()
+            scheduler.add_job(
+                perf_tracker.update_performance,
+                "cron",
+                hour=2,
+                minute=0,
+                day_of_week="mon-fri",
+                id="performance_tracker",
                 replace_existing=True,
             )
             scheduler.add_job(

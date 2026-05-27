@@ -166,7 +166,7 @@ class AnalysisScheduler:
 
                 # Save alert history
                 if is_sent:
-                    await self._save_alert(user_id, symbol, analysis)
+                    await self._save_alert(user_id, symbol, analysis, price)
 
         except Exception as e:
             print(f"Error notifying users for {symbol}: {e}")
@@ -213,6 +213,7 @@ class AnalysisScheduler:
         user_id: str,
         symbol: str,
         analysis: "AIAnalysisResult",
+        price: float = None,
     ) -> None:
         """Save alert to history."""
         try:
@@ -224,6 +225,7 @@ class AnalysisScheduler:
                     "ai_summary": analysis.summary,
                     "confidence": analysis.confidence,
                     "reasons": analysis.reasons,
+                    "alert_price": price,
                     "sent_at": datetime.now(timezone.utc).isoformat(),
                 }
             ).execute()
