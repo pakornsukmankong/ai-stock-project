@@ -102,17 +102,49 @@ class AnalysisScheduler:
             signal_summary = StockSignalSummary(
                 symbol=symbol,
                 price=indicators.current_price,
-                rsi=indicators.rsi,
-                macd=signal.macd_status,
-                trend=signal.trend_status,
-                support=signal.support_status,
-                volume=signal.volume_status,
                 score=signal.total_score,
+                # Trend
+                ema_9=indicators.ema_9,
+                ema_21=indicators.ema_21,
+                ema_50=indicators.ema_50,
+                ema_200=indicators.ema_200,
+                macd_value=indicators.macd_value,
+                macd_signal=indicators.macd_signal,
+                macd_histogram=indicators.macd_histogram,
+                supertrend_direction=indicators.supertrend_direction,
+                supertrend_value=indicators.supertrend_value,
+                # Momentum
+                rsi=indicators.rsi,
+                rsi_state=indicators.rsi_state,
+                stoch_k=indicators.stoch_k,
+                stoch_d=indicators.stoch_d,
+                # Volatility
+                atr=indicators.atr,
+                bb_upper=indicators.bb_upper,
+                bb_middle=indicators.bb_middle,
+                bb_lower=indicators.bb_lower,
+                bb_position=indicators.bb_position,
+                # Volume
+                volume_ratio=indicators.current_volume / indicators.avg_volume if indicators.avg_volume > 0 else 1.0,
+                # Market Structure
+                pivot=indicators.pivot_levels.pivot,
+                r1=indicators.pivot_levels.r1,
+                r2=indicators.pivot_levels.r2,
+                s1=indicators.pivot_levels.s1,
+                s2=indicators.pivot_levels.s2,
+                # Patterns
+                candle_patterns=indicators.candle_patterns.get_detected(),
+                signal_reasons=signal.reasons,
             )
 
             # Step 6: AI analysis (with cache)
             analysis = await self.ai_service.analyze(signal_summary)
             if analysis is None:
+                return
+
+            # Only notify if AI says BUY (not HOLD or SELL)
+            if analysis.action != "BUY":
+                print(f"  AI decision for {symbol}: {analysis.action} — skipping notification")
                 return
 
             # Step 7: Notify all users watching this stock

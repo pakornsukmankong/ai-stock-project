@@ -32,14 +32,17 @@ class LineNotificationService:
         return await self._send_push_message(line_user_id, message)
 
     def _format_message(self, analysis: AIAnalysisResult, price: float) -> str:
-        """Format the buy alert message for LINE notification."""
+        """Format the alert message for LINE notification."""
         reasons_text = "\n".join(f"• {reason}" for reason in analysis.reasons)
 
+        action_emoji = {"BUY": "🚀", "SELL": "🔴", "HOLD": "⏸️"}.get(analysis.action, "📊")
+
         return (
-            f"🚀 BUY SIGNAL: {analysis.symbol}\n"
+            f"{action_emoji} {analysis.action} SIGNAL: {analysis.symbol}\n"
             f"━━━━━━━━━━━━━━━\n"
             f"💰 Price: ${price:.2f}\n"
             f"📊 Confidence: {analysis.confidence}\n"
+            f"🎯 Action: {analysis.action}\n"
             f"━━━━━━━━━━━━━━━\n"
             f"📋 Reasons:\n{reasons_text}\n"
             f"━━━━━━━━━━━━━━━\n"

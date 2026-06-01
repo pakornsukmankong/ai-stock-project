@@ -4,18 +4,55 @@ from typing import Optional
 
 
 class StockSignalSummary(BaseModel):
+    """Compact summary sent to AI with all indicator data."""
     symbol: str
     price: float
-    rsi: float
-    macd: str
-    trend: str
-    support: str
-    volume: str
     score: int = 0
+
+    # Trend
+    ema_9: float = 0.0
+    ema_21: float = 0.0
+    ema_50: float = 0.0
+    ema_200: float = 0.0
+    macd_value: float = 0.0
+    macd_signal: float = 0.0
+    macd_histogram: float = 0.0
+    supertrend_direction: str = "neutral"
+    supertrend_value: float = 0.0
+
+    # Momentum
+    rsi: float = 50.0
+    rsi_state: str = "neutral"
+    stoch_k: float = 50.0
+    stoch_d: float = 50.0
+
+    # Volatility
+    atr: float = 0.0
+    bb_upper: float = 0.0
+    bb_middle: float = 0.0
+    bb_lower: float = 0.0
+    bb_position: str = "middle"
+
+    # Volume
+    volume_ratio: float = 1.0
+
+    # Market Structure
+    pivot: float = 0.0
+    r1: float = 0.0
+    r2: float = 0.0
+    s1: float = 0.0
+    s2: float = 0.0
+
+    # Patterns
+    candle_patterns: list[str] = []
+
+    # Signal engine reasons
+    signal_reasons: list[str] = []
 
 
 class AIAnalysisResult(BaseModel):
     symbol: str
+    action: str  # "BUY", "SELL", "HOLD"
     summary: str
     confidence: str
     reasons: list[str]
