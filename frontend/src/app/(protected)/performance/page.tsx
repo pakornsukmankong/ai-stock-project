@@ -5,11 +5,14 @@ import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 import { alertsApi, type PerformanceStats, type PerformanceAlert } from "@/lib/api";
 import { formatDate } from "@/lib/utils";
-import { Activity, TrendingUp, TrendingDown, Target } from "lucide-react";
+import { Activity, TrendingUp, TrendingDown, Target, ChevronLeft, ChevronRight } from "lucide-react";
+
+const PAGE_SIZE = 10;
 
 export default function PerformancePage() {
   const [stats, setStats] = useState<PerformanceStats | null>(null);
   const [isLoading, setIsLoading] = useState(true);
+  const [page, setPage] = useState(0);
   const router = useRouter();
 
   useEffect(() => {
@@ -52,6 +55,13 @@ export default function PerformancePage() {
     );
   }
 
+  // Pagination
+  const totalPages = Math.ceil(stats.alerts.length / PAGE_SIZE);
+  const paginatedAlerts = stats.alerts.slice(
+    page * PAGE_SIZE,
+    (page + 1) * PAGE_SIZE
+  );
+
   return (
     <main className="p-6">
       <div className="mx-auto max-w-4xl">
@@ -59,6 +69,9 @@ export default function PerformancePage() {
         <div className="mb-6 flex items-center gap-3">
           <Target className="h-5 w-5 text-terminal-green" />
           <h1 className="font-mono text-lg font-bold text-foreground">Performance Tracking</h1>
+          <span className="font-mono text-xs text-muted-foreground">
+            {stats.total_alerts} alerts
+          </span>
         </div>
 
         {/* Stats Cards */}
@@ -98,9 +111,36 @@ export default function PerformancePage() {
             </div>
 
             {/* Rows */}
-            {stats.alerts.map((alert, i) => (
+            {paginatedAlerts.map((alert, i) => (
               <PerformanceRow key={i} alert={alert} />
             ))}
+          </div>
+        )}
+
+        {/* Pagination */}
+        {totalPages > 1 && (
+          <div className="mt-4 flex items-center justify-between rounded-lg border border-terminal-border bg-terminal-panel px-4 py-3">
+            <span className="font-mono text-xs text-muted-foreground">
+              Page {page + 1} of {totalPages}
+            </span>
+            <div className="flex gap-2">
+              <button
+                onClick={() => setPage(Math.max(0, page - 1))}
+                disabled={page === 0}
+                className="flex items-center gap-1 rounded-md border border-terminal-border px-2 py-1 font-mono text-xs text-muted-foreground transition-all hover:border-terminal-green/50 hover:text-terminal-green disabled:opacity-30"
+              >
+                <ChevronLeft className="h-3 w-3" />
+                Prev
+              </button>
+              <button
+                onClick={() => setPage(Math.min(totalPages - 1, page + 1))}
+                disabled={page >= totalPages - 1}
+                className="flex items-center gap-1 rounded-md border border-terminal-border px-2 py-1 font-mono text-xs text-muted-foreground transition-all hover:border-terminal-green/50 hover:text-terminal-green disabled:opacity-30"
+              >
+                Next
+                <ChevronRight className="h-3 w-3" />
+              </button>
+            </div>
           </div>
         )}
       </div>
