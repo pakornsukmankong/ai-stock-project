@@ -16,7 +16,7 @@ class SignalResult:
     macd_score: int
     volume_score: int
     support_score: int
-    reasons: list[str]
+    reasons: list
     rsi_status: str
     macd_status: str
     trend_status: str
@@ -25,45 +25,38 @@ class SignalResult:
 
 
 class SignalEngine:
-    """Scoring-based signal engine that determines if a buy signal exists.
+    """Scoring-based signal engine using comprehensive indicators.
 
     Scoring system (max 100 pts):
-    - Trend (EMA200):       30 pts
-    - RSI:                  20 pts
-    - MACD:                 20 pts
-    - Volume:               15 pts
-    - Support Zone:         15 pts
+    - Trend (EMA + SuperTrend):  30 pts
+    - Momentum (RSI + Stoch):    20 pts
+    - MACD:                      20 pts
+    - Volume + Volatility:       15 pts
+    - Support/Patterns:          15 pts
 
     Buy signal triggers when total score >= 60.
     """
 
-    EMA_NEAR_PERCENT = 0.02  # Within 2% of EMA200
-    SUPPORT_PROXIMITY_PERCENT = 0.03  # Within 3% of support
-    RESISTANCE_PROXIMITY_PERCENT = 0.03  # Within 3% of resistance
     VOLUME_ACCUMULATION_MULTIPLIER = 1.5
-    VOLUME_NEUTRAL_MULTIPLIER = 1.0
 
     def evaluate(self, indicators: IndicatorResult) -> SignalResult:
-        """Evaluate indicators using scoring system.
+        """Evaluate indicators using scoring system."""
+        reasons = []
 
-        Returns SignalResult with score breakdown and buy signal decision.
-        """
-        reasons: list[str] = []
-
-        # Trend Score (30 pts) - EMA200
+        # Trend Score (30 pts) - EMA alignment + SuperTrend
         trend_score, trend_status = self._score_trend(indicators, reasons)
 
-        # RSI Score (20 pts)
-        rsi_score, rsi_status = self._score_rsi(indicators, trend_status, reasons)
+        # Momentum Score (20 pts) - RSI + Stochastic
+        rsi_score, rsi_status = self._score_momentum(indicators, reasons)
 
         # MACD Score (20 pts)
         macd_score, macd_status = self._score_macd(indicators, reasons)
 
-        # Volume Score (15 pts)
-        volume_score, volume_status = self._score_volume(indicators, reasons)
+        # Volume + Volatility Score (15 pts)
+        volume_score, volume_status = self._score_volume_volatility(indicators, reasons)
 
-        # Support Zone Score (15 pts)
-        support_score, support_status = self._score_support(indicators, reasons)
+        # Support/Patterns Score (15 pts)
+        support_score, support_status = self._score_support_patterns(indicators, reasons)
 
         # Total
         total_score = trend_score + rsi_score + macd_score + volume_score + support_score
@@ -85,112 +78,163 @@ class SignalEngine:
             volume_status=volume_status,
         )
 
-    def _score_trend(self, indicators: IndicatorResult, reasons: list[str]) -> tuple[int, str]:
-        """Score trend based on price vs EMA200.
+    def _score_trend(self, ind: IndicatorResult, reasons: list) -> tuple:
+        """Score trend: EMA alignment + SuperTrend (max 30 pts).
 
-        - Above EMA200 = +30
-        - Near EMA200 (within 2%) = +15
+        - Full bullish alignment (price > EMA9 > EMA21 > EMA50 > EMA200) + SuperTrend bullish = 30
+        - Partial alignment + SuperTrend bullish = 20
+        - Price above EMA200 only = 10
         - Below EMA200 = 0
         """
-        price = indicators.current_price
-        ema = indicators.ema_200
-        distance_pct = (price - ema) / ema
+        score = 0
+        price = ind.current_price
 
-        if distance_pct > self.EMA_NEAR_PERCENT:
-            reasons.append(f"Price above EMA200 (+{distance_pct*100:.1f}%)")
-            return 30, "above"
-        elif abs(distance_pct) <= self.EMA_NEAR_PERCENT:
-            reasons.append("Price near EMA200")
-            return 15, "near"
+        # Check EMA alignment
+        is_full_alignment = (
+            price > ind.ema_9 > ind.ema_21 > ind.ema_50 > ind.ema_200
+        )
+        is_above_ema200 = price > ind.ema_200
+        is_supertrend_bullish = ind.supertrend_direction == "bullish"
+
+        if is_full_alignment and is_supertrend_bullish:
+            score = 30
+            reasons.append("Full EMA alignment (9>21>50>200) + SuperTrend bullish")
+            status = "strong_uptrend"
+        elif is_above_ema200 and is_supertrend_bullish:
+            score = 20
+            reasons.append("Above EMA200 + SuperTrend bullish")
+            status = "uptrend"
+        elif is_above_ema200:
+            score = 10
+            status = "above_ema200"
         else:
-            return 0, "below"
+            score = 0
+            status = "downtrend"
 
-    def _score_rsi(
-        self, indicators: IndicatorResult, trend_status: str, reasons: list[str]
-    ) -> tuple[int, str]:
-        """Score RSI based on value and trend context.
+        return score, status
 
-        - RSI 35-50 during uptrend = +20
-        - RSI < 30 (oversold) = +15
+    def _score_momentum(self, ind: IndicatorResult, reasons: list) -> tuple:
+        """Score momentum: RSI + Stochastic (max 20 pts).
+
+        - RSI 35-50 in uptrend + Stoch %K > %D = 20
+        - RSI < 30 (oversold) + Stoch < 20 = 15 (reversal potential)
         - RSI > 70 = 0
         """
-        rsi = indicators.rsi
+        score = 0
+        price = ind.current_price
+        is_uptrend = price > ind.ema_200
 
-        if 35 <= rsi <= 50 and trend_status in ("above", "near"):
-            reasons.append(f"RSI {rsi:.1f} — pullback in uptrend")
-            return 20, "pullback_uptrend"
-        elif rsi < 30:
-            reasons.append(f"RSI {rsi:.1f} — oversold")
-            return 15, "oversold"
-        elif rsi > 70:
-            return 0, "overbought"
+        # RSI + Stochastic combined
+        if 35 <= ind.rsi <= 50 and is_uptrend and ind.stoch_k > ind.stoch_d:
+            score = 20
+            reasons.append(f"RSI {ind.rsi:.1f} pullback + Stoch bullish cross")
+            status = "pullback_uptrend"
+        elif ind.rsi < 30 and ind.stoch_k < 20:
+            score = 15
+            reasons.append(f"RSI {ind.rsi:.1f} oversold + Stoch oversold (reversal)")
+            status = "oversold"
+        elif ind.rsi < 40 and ind.stoch_k > ind.stoch_d:
+            score = 10
+            reasons.append(f"RSI {ind.rsi:.1f} + Stoch turning up")
+            status = "recovering"
+        elif ind.rsi > 70:
+            score = 0
+            status = "overbought"
         else:
-            return 5, "neutral"
+            score = 5
+            status = "neutral"
 
-    def _score_macd(self, indicators: IndicatorResult, reasons: list[str]) -> tuple[int, str]:
-        """Score MACD based on crossover status.
+        return score, status
 
-        - Bullish crossover (histogram > 0, MACD > signal) = +20
-        - Weak momentum (histogram turning positive) = +10
+    def _score_macd(self, ind: IndicatorResult, reasons: list) -> tuple:
+        """Score MACD (max 20 pts).
+
+        - Bullish crossover (histogram > 0, MACD > signal) = 20
+        - Histogram turning positive = 10
         - Bearish = 0
         """
-        histogram = indicators.macd_histogram
-        macd = indicators.macd_value
-        signal = indicators.macd_signal
+        histogram = ind.macd_histogram
+        macd = ind.macd_value
+        signal = ind.macd_signal
 
         if histogram > 0 and macd > signal:
             reasons.append("MACD bullish crossover")
             return 20, "bullish"
         elif histogram > -0.1 and macd > signal * 0.95:
-            reasons.append("MACD weak momentum (turning bullish)")
+            reasons.append("MACD momentum turning bullish")
             return 10, "weak_bullish"
         else:
             return 0, "bearish"
 
-    def _score_volume(self, indicators: IndicatorResult, reasons: list[str]) -> tuple[int, str]:
-        """Score volume based on accumulation pattern.
+    def _score_volume_volatility(self, ind: IndicatorResult, reasons: list) -> tuple:
+        """Score volume + Bollinger Band position (max 15 pts).
 
-        - Accumulation (volume > 1.5x avg) = +15
-        - Neutral (volume ~ avg) = +8
-        - Weak (volume < avg) = 0
+        - Accumulation volume + price near lower BB = 15
+        - Accumulation volume = 10
+        - Normal volume + near lower BB = 8
+        - Weak = 0
         """
-        if indicators.avg_volume == 0:
+        if ind.avg_volume == 0:
             return 0, "unknown"
 
-        ratio = indicators.current_volume / indicators.avg_volume
+        ratio = ind.current_volume / ind.avg_volume
+        is_accumulation = ratio >= self.VOLUME_ACCUMULATION_MULTIPLIER
+        is_near_lower_bb = ind.bb_position in ("near_lower", "below_lower")
 
-        if ratio >= self.VOLUME_ACCUMULATION_MULTIPLIER:
+        if is_accumulation and is_near_lower_bb:
+            reasons.append(f"Accumulation volume ({ratio:.1f}x) + near lower Bollinger Band")
+            return 15, "strong_accumulation"
+        elif is_accumulation:
             reasons.append(f"Accumulation volume ({ratio:.1f}x avg)")
-            return 15, "accumulation"
-        elif ratio >= self.VOLUME_NEUTRAL_MULTIPLIER:
-            return 8, "neutral"
+            return 10, "accumulation"
+        elif is_near_lower_bb:
+            reasons.append("Price near lower Bollinger Band (potential bounce)")
+            return 8, "bb_bounce"
+        elif ratio >= 1.0:
+            return 4, "neutral"
         else:
             return 0, "weak"
 
-    def _score_support(self, indicators: IndicatorResult, reasons: list[str]) -> tuple[int, str]:
-        """Score based on proximity to support/resistance.
+    def _score_support_patterns(self, ind: IndicatorResult, reasons: list) -> tuple:
+        """Score support proximity + candlestick patterns (max 15 pts).
 
-        - Near strong support = +15
-        - Mid-range = +5
+        - Near pivot support + bullish pattern = 15
+        - Near pivot support = 10
+        - Bullish candlestick pattern only = 8
         - Near resistance = 0
         """
-        price = indicators.current_price
-        support = indicators.support_level
-        resistance = indicators.resistance_level
+        price = ind.current_price
+        pivot = ind.pivot_levels
 
-        if support == 0 or resistance == 0:
-            return 0, "unknown"
+        # Check proximity to support/resistance
+        is_near_support = False
+        is_near_resistance = False
 
-        # Check if near resistance (bad)
-        resistance_distance = (resistance - price) / resistance
-        if resistance_distance <= self.RESISTANCE_PROXIMITY_PERCENT:
+        if pivot.s1 > 0:
+            support_distance = abs(price - pivot.s1) / price
+            is_near_support = support_distance <= 0.02
+
+        if pivot.r1 > 0:
+            resistance_distance = abs(price - pivot.r1) / price
+            is_near_resistance = resistance_distance <= 0.02
+
+        # Check bullish patterns
+        patterns = ind.candle_patterns.get_detected()
+        has_bullish_pattern = any(
+            p in patterns for p in ["Hammer", "Bullish Engulfing", "Doji"]
+        )
+
+        if is_near_resistance:
             return 0, "resistance"
 
-        # Check if near support (good)
-        support_distance = (price - support) / support
-        if support_distance <= self.SUPPORT_PROXIMITY_PERCENT:
-            reasons.append("Price near strong support zone")
-            return 15, "near_support"
-
-        # Mid-range
-        return 5, "mid_range"
+        if is_near_support and has_bullish_pattern:
+            reasons.append(f"Near support (S1: ${pivot.s1:.2f}) + {patterns[0]} pattern")
+            return 15, "strong_support"
+        elif is_near_support:
+            reasons.append(f"Price near pivot support S1 (${pivot.s1:.2f})")
+            return 10, "near_support"
+        elif has_bullish_pattern:
+            reasons.append(f"Candlestick pattern: {', '.join(patterns)}")
+            return 8, "pattern"
+        else:
+            return 3, "mid_range"
