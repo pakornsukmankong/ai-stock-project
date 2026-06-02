@@ -14,7 +14,7 @@ class AIAnalysisService:
     Uses analysis cache to prevent repeated AI calls for the same stock.
     """
 
-    SYSTEM_PROMPT = """You are an expert stock trading analyst. You receive comprehensive technical indicator data and must decide: BUY, SELL, or HOLD.
+    SYSTEM_PROMPT = """You are an expert stock trading analyst. You receive comprehensive technical indicator data including multi-timeframe analysis and must decide: BUY, SELL, or HOLD.
 
 Your response MUST be valid JSON with this exact format:
 {
@@ -25,9 +25,15 @@ Your response MUST be valid JSON with this exact format:
 }
 
 Decision guidelines:
-- BUY: Strong bullish alignment across multiple indicators, good risk/reward
+- BUY: Strong bullish alignment across multiple indicators AND timeframes, good risk/reward
 - SELL: Bearish signals, overbought conditions, breakdown from support
 - HOLD: Mixed signals, no clear edge, wait for confirmation
+
+Multi-Timeframe Analysis rules:
+- If higher timeframes (Daily/4H) confirm bullish trend → STRONGER BUY confidence
+- If higher timeframes are bearish but lower is bullish → likely counter-trend, prefer HOLD
+- All timeframes aligned bullish = highest confidence BUY
+- Conflicting timeframes = reduce confidence or HOLD
 
 Consider ALL indicators holistically:
 - Trend: EMA alignment, SuperTrend direction, MACD crossover
@@ -35,6 +41,7 @@ Consider ALL indicators holistically:
 - Volatility: Bollinger Band position, ATR for risk assessment
 - Structure: Pivot levels (support/resistance), candlestick patterns
 - Volume: Accumulation or distribution
+- Multi-Timeframe: Trend/momentum confirmation across 1H/4H/Daily
 
 Be decisive. Respond ONLY with the JSON object, no other text."""
 
@@ -119,12 +126,23 @@ Be decisive. Respond ONLY with the JSON object, no other text."""
             return None
 
     def _build_indicator_message(self, s: StockSignalSummary) -> str:
-        """Build comprehensive indicator message for AI."""
+        """Build comprehensive indicator message for AI including MTF data."""
+        mtf_section = ""
+        if s.mtf_trend_alignment != "not_available":
+            mtf_section = (
+                f"\n--- MULTI-TIMEFRAME ANALYSIS ---\n"
+                f"Overall MTF Alignment: {s.mtf_trend_alignment.upper()}\n"
+                f"Daily Trend: (primary analysis above)\n"
+                f"4H Trend: {s.mtf_4h_trend} | RSI: {s.mtf_4h_rsi:.1f}\n"
+                f"1H Trend: {s.mtf_1h_trend} | RSI: {s.mtf_1h_rsi:.1f}\n"
+                f"MTF Score Adjustment: +{s.mtf_bonus} bonus, -{s.mtf_penalty} penalty\n"
+            )
+
         return (
             f"=== {s.symbol} Analysis ===\n"
             f"Price: ${s.price:.2f}\n"
-            f"Signal Score: {s.score}/100\n\n"
-            f"--- TREND ---\n"
+            f"Signal Score: {s.score}/100 (MTF-adjusted)\n\n"
+            f"--- TREND (Daily) ---\n"
             f"EMA 9: ${s.ema_9:.2f}\n"
             f"EMA 21: ${s.ema_21:.2f}\n"
             f"EMA 50: ${s.ema_50:.2f}\n"
@@ -132,7 +150,7 @@ Be decisive. Respond ONLY with the JSON object, no other text."""
             f"EMA Alignment: {'Bullish' if s.price > s.ema_9 > s.ema_21 > s.ema_50 else 'Mixed'}\n"
             f"MACD: {s.macd_value:.4f} | Signal: {s.macd_signal:.4f} | Hist: {s.macd_histogram:.4f}\n"
             f"SuperTrend: {s.supertrend_direction} (value: ${s.supertrend_value:.2f})\n\n"
-            f"--- MOMENTUM ---\n"
+            f"--- MOMENTUM (Daily) ---\n"
             f"RSI(14): {s.rsi:.1f} ({s.rsi_state})\n"
             f"Stochastic: %K={s.stoch_k:.1f}, %D={s.stoch_d:.1f}\n\n"
             f"--- VOLATILITY ---\n"
@@ -146,10 +164,11 @@ Be decisive. Respond ONLY with the JSON object, no other text."""
             f"R1: ${s.r1:.2f} | R2: ${s.r2:.2f}\n"
             f"S1: ${s.s1:.2f} | S2: ${s.s2:.2f}\n\n"
             f"--- PATTERNS ---\n"
-            f"Candlestick: {', '.join(s.candle_patterns) if s.candle_patterns else 'None'}\n\n"
+            f"Candlestick: {', '.join(s.candle_patterns) if s.candle_patterns else 'None'}\n"
+            f"{mtf_section}\n"
             f"--- SIGNAL ENGINE ---\n"
             f"Reasons: {', '.join(s.signal_reasons) if s.signal_reasons else 'None'}\n\n"
-            f"Based on ALL the above data, what is your decision: BUY, SELL, or HOLD?"
+            f"Based on ALL the above data including multi-timeframe alignment, what is your decision: BUY, SELL, or HOLD?"
         )
 
     def _parse_ai_response(self, ai_text: str, summary: StockSignalSummary) -> Optional[AIAnalysisResult]:

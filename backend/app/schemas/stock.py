@@ -49,6 +49,15 @@ class StockSignalSummary(BaseModel):
     # Signal engine reasons
     signal_reasons: list[str] = []
 
+    # Multi-Timeframe Analysis
+    mtf_trend_alignment: str = "not_available"  # strong_bullish, bullish, neutral, bearish, conflicting
+    mtf_4h_trend: str = "n/a"  # bullish, bearish, neutral
+    mtf_1h_trend: str = "n/a"  # bullish, bearish, neutral
+    mtf_4h_rsi: float = 0.0
+    mtf_1h_rsi: float = 0.0
+    mtf_bonus: int = 0
+    mtf_penalty: int = 0
+
 
 class AIAnalysisResult(BaseModel):
     symbol: str

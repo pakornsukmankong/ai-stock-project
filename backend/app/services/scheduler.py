@@ -6,6 +6,7 @@ from app.services.market_data import MarketDataService
 from app.services.market_hours import is_market_open, get_market_status
 from app.services.indicator_engine import IndicatorEngine
 from app.services.signal_engine import SignalEngine
+from app.services.mtf_engine import MTFEngine
 from app.services.ai_analysis import AIAnalysisService
 from app.services.line_notification import LineNotificationService
 from app.schemas.stock import StockSignalSummary
@@ -26,6 +27,7 @@ class AnalysisScheduler:
         self.market_data = MarketDataService()
         self.indicator_engine = IndicatorEngine()
         self.signal_engine = SignalEngine()
+        self.mtf_engine = MTFEngine()
         self.ai_service = AIAnalysisService()
         self.line_service = LineNotificationService()
 
@@ -77,32 +79,55 @@ class AnalysisScheduler:
             return []
 
     async def _analyze_symbol(self, symbol: str) -> None:
-        """Run full analysis pipeline for a single stock symbol."""
+        """Run full analysis pipeline for a single stock symbol with multi-timeframe."""
         try:
-            # Step 1: Fetch market data
+            # Step 1: Fetch daily market data (primary timeframe)
             df = await self.market_data.fetch_ohlcv(symbol)
             if df is None or df.empty:
                 return
 
-            # Step 2: Calculate indicators
+            # Step 2: Calculate daily indicators
             indicators = self.indicator_engine.calculate(df)
             if indicators is None:
                 return
 
-            # Step 3: Run signal engine (rule-based)
-            signal = self.signal_engine.evaluate(indicators)
+            # Step 3: Run Multi-Timeframe analysis (4H + 1H)
+            mtf_result = None
+            try:
+                mtf_result = await self.mtf_engine.analyze(symbol)
+                # Use daily indicators from our own calculation (more reliable)
+                if mtf_result and mtf_result.daily.indicators is None:
+                    from app.services.mtf_engine import TimeframeAnalysis
+                    mtf_result.daily = TimeframeAnalysis(timeframe="1d")
+                    mtf_result.daily.indicators = indicators
+                    mtf_result.daily.is_valid = True
+                    mtf_result.daily.trend_direction = self.mtf_engine._classify_trend(indicators)
+                    mtf_result.daily.momentum_state = self.mtf_engine._classify_momentum(indicators)
+                    mtf_result.daily.macd_state = self.mtf_engine._classify_macd(indicators)
+                    # Recalculate confluence with updated daily
+                    self.mtf_engine._calculate_confluence(mtf_result)
+            except Exception as e:
+                print(f"  MTF analysis failed for {symbol} (using single TF): {e}")
+                mtf_result = None
 
-            # Step 4: If NO buy signal, stop here (no AI call)
+            # Step 4: Run signal engine with MTF adjustment
+            signal = self.signal_engine.evaluate_with_mtf(indicators, mtf_result)
+
+            # Step 5: If NO buy signal, stop here (no AI call)
             if not signal.is_buy_signal:
                 return
 
-            print(f"  BUY SIGNAL for {symbol} (score: {signal.total_score}/100): {signal.reasons}")
+            # Determine which score to display
+            display_score = signal.mtf_adjusted_score if mtf_result else signal.total_score
+            print(f"  BUY SIGNAL for {symbol} (score: {display_score}/100, "
+                  f"base: {signal.total_score}, MTF bonus: +{signal.mtf_bonus}, "
+                  f"penalty: -{signal.mtf_penalty}): {signal.reasons}")
 
-            # Step 5: Build compact summary for AI
+            # Step 6: Build compact summary for AI (with MTF data)
             signal_summary = StockSignalSummary(
                 symbol=symbol,
                 price=indicators.current_price,
-                score=signal.total_score,
+                score=display_score,
                 # Trend
                 ema_9=indicators.ema_9,
                 ema_21=indicators.ema_21,
@@ -135,9 +160,17 @@ class AnalysisScheduler:
                 # Patterns
                 candle_patterns=indicators.candle_patterns.get_detected(),
                 signal_reasons=signal.reasons,
+                # Multi-Timeframe
+                mtf_trend_alignment=signal.mtf_confluence,
+                mtf_4h_trend=mtf_result.four_hour.trend_direction if mtf_result and mtf_result.four_hour.is_valid else "n/a",
+                mtf_1h_trend=mtf_result.one_hour.trend_direction if mtf_result and mtf_result.one_hour.is_valid else "n/a",
+                mtf_4h_rsi=mtf_result.four_hour.indicators.rsi if mtf_result and mtf_result.four_hour.indicators else 0.0,
+                mtf_1h_rsi=mtf_result.one_hour.indicators.rsi if mtf_result and mtf_result.one_hour.indicators else 0.0,
+                mtf_bonus=signal.mtf_bonus,
+                mtf_penalty=signal.mtf_penalty,
             )
 
-            # Step 6: AI analysis (with cache)
+            # Step 7: AI analysis (with cache)
             analysis = await self.ai_service.analyze(signal_summary)
             if analysis is None:
                 return
@@ -147,7 +180,7 @@ class AnalysisScheduler:
                 print(f"  AI decision for {symbol}: {analysis.action} — skipping notification")
                 return
 
-            # Step 7: Notify all users watching this stock
+            # Step 8: Notify all users watching this stock
             await self._notify_users(symbol, analysis, indicators.current_price)
 
         except Exception as e:

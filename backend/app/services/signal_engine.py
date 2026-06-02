@@ -1,4 +1,5 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from typing import Optional
 from app.services.indicator_engine import IndicatorResult
 
 # Minimum score to trigger buy signal (out of 100)
@@ -23,6 +24,13 @@ class SignalResult:
     support_status: str
     volume_status: str
 
+    # Multi-Timeframe fields
+    mtf_bonus: int = 0
+    mtf_penalty: int = 0
+    mtf_adjusted_score: int = 0
+    mtf_confluence: str = "not_available"  # trend alignment from MTF
+    mtf_reasons: list = field(default_factory=list)
+
 
 class SignalEngine:
     """Scoring-based signal engine using comprehensive indicators.
@@ -40,7 +48,43 @@ class SignalEngine:
     VOLUME_ACCUMULATION_MULTIPLIER = 1.5
 
     def evaluate(self, indicators: IndicatorResult) -> SignalResult:
-        """Evaluate indicators using scoring system."""
+        """Evaluate indicators using scoring system (single timeframe, backward compatible)."""
+        return self._run_scoring(indicators)
+
+    def evaluate_with_mtf(self, indicators: IndicatorResult, mtf_result) -> SignalResult:
+        """Evaluate indicators with Multi-Timeframe confluence adjustment.
+
+        The MTF result provides bonus/penalty scores based on higher timeframe alignment.
+        - Bonus: added when multiple timeframes confirm the signal (max +25)
+        - Penalty: subtracted when higher timeframes conflict (max -25)
+
+        Final adjusted score determines the buy signal, not the raw score.
+        """
+        signal = self._run_scoring(indicators)
+
+        # Apply MTF adjustment
+        if mtf_result is not None:
+            signal.mtf_bonus = mtf_result.mtf_bonus_score
+            signal.mtf_penalty = mtf_result.mtf_penalty_score
+            signal.mtf_confluence = mtf_result.trend_alignment
+            signal.mtf_reasons = mtf_result.confluence_reasons
+
+            # Adjusted score: base + bonus - penalty (clamped 0-125)
+            adjusted = signal.total_score + signal.mtf_bonus - signal.mtf_penalty
+            signal.mtf_adjusted_score = max(0, min(adjusted, 125))
+
+            # Use adjusted score for buy signal decision
+            signal.is_buy_signal = signal.mtf_adjusted_score >= BUY_SIGNAL_THRESHOLD
+
+            # Update reasons with MTF info
+            signal.reasons.extend(signal.mtf_reasons)
+        else:
+            signal.mtf_adjusted_score = signal.total_score
+
+        return signal
+
+    def _run_scoring(self, indicators: IndicatorResult) -> SignalResult:
+        """Internal scoring logic."""
         reasons = []
 
         # Trend Score (30 pts) - EMA alignment + SuperTrend
