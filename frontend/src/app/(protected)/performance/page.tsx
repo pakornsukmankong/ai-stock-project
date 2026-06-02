@@ -1,19 +1,31 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
-import { alertsApi, type PerformanceStats, type PerformanceAlert } from "@/lib/api";
+import { alertsApi, type PerformanceStats, type PerformanceAlert, type PaginationMeta } from "@/lib/api";
 import { formatDate } from "@/lib/utils";
 import { Activity, TrendingUp, TrendingDown, Target, ChevronLeft, ChevronRight } from "lucide-react";
 
-const PAGE_SIZE = 10;
+const PER_PAGE = 20;
 
 export default function PerformancePage() {
   const [stats, setStats] = useState<PerformanceStats | null>(null);
   const [isLoading, setIsLoading] = useState(true);
-  const [page, setPage] = useState(0);
+  const [page, setPage] = useState(1);
   const router = useRouter();
+
+  const fetchPerformance = useCallback(async (pageNum: number) => {
+    try {
+      setIsLoading(true);
+      const response = await alertsApi.getPerformance(pageNum, PER_PAGE);
+      setStats(response);
+    } catch {
+      // Handle error
+    } finally {
+      setIsLoading(false);
+    }
+  }, []);
 
   useEffect(() => {
     async function init() {
@@ -23,20 +35,18 @@ export default function PerformancePage() {
         router.push("/login");
         return;
       }
-
-      try {
-        const response = await alertsApi.getPerformance();
-        setStats(response);
-      } catch {
-        // Handle error
-      } finally {
-        setIsLoading(false);
-      }
+      await fetchPerformance(1);
     }
     init();
-  }, [router]);
+  }, [router, fetchPerformance]);
 
-  if (isLoading) {
+  useEffect(() => {
+    if (page > 1) {
+      fetchPerformance(page);
+    }
+  }, [page, fetchPerformance]);
+
+  if (isLoading && !stats) {
     return (
       <div className="flex h-screen items-center justify-center">
         <div className="flex items-center gap-2 font-mono text-sm text-terminal-green animate-pulse-green">
@@ -55,12 +65,19 @@ export default function PerformancePage() {
     );
   }
 
-  // Pagination
-  const totalPages = Math.ceil(stats.alerts.length / PAGE_SIZE);
-  const paginatedAlerts = stats.alerts.slice(
-    page * PAGE_SIZE,
-    (page + 1) * PAGE_SIZE
-  );
+  const pagination = stats.pagination;
+
+  const handlePrevPage = () => {
+    if (pagination.has_prev) {
+      setPage((prev) => prev - 1);
+    }
+  };
+
+  const handleNextPage = () => {
+    if (pagination.has_next) {
+      setPage((prev) => prev + 1);
+    }
+  };
 
   return (
     <main className="p-6">
@@ -111,30 +128,30 @@ export default function PerformancePage() {
             </div>
 
             {/* Rows */}
-            {paginatedAlerts.map((alert, i) => (
+            {stats.alerts.map((alert, i) => (
               <PerformanceRow key={i} alert={alert} />
             ))}
           </div>
         )}
 
         {/* Pagination */}
-        {totalPages > 1 && (
+        {pagination.total_pages > 1 && (
           <div className="mt-4 flex items-center justify-between rounded-lg border border-terminal-border bg-terminal-panel px-4 py-3">
             <span className="font-mono text-xs text-muted-foreground">
-              Page {page + 1} of {totalPages}
+              Page {pagination.page} of {pagination.total_pages} ({pagination.total} total)
             </span>
             <div className="flex gap-2">
               <button
-                onClick={() => setPage(Math.max(0, page - 1))}
-                disabled={page === 0}
+                onClick={handlePrevPage}
+                disabled={!pagination.has_prev}
                 className="flex items-center gap-1 rounded-md border border-terminal-border px-2 py-1 font-mono text-xs text-muted-foreground transition-all hover:border-terminal-green/50 hover:text-terminal-green disabled:opacity-30"
               >
                 <ChevronLeft className="h-3 w-3" />
                 Prev
               </button>
               <button
-                onClick={() => setPage(Math.min(totalPages - 1, page + 1))}
-                disabled={page >= totalPages - 1}
+                onClick={handleNextPage}
+                disabled={!pagination.has_next}
                 className="flex items-center gap-1 rounded-md border border-terminal-border px-2 py-1 font-mono text-xs text-muted-foreground transition-all hover:border-terminal-green/50 hover:text-terminal-green disabled:opacity-30"
               >
                 Next

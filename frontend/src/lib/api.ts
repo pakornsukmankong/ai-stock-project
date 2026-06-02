@@ -67,9 +67,9 @@ export const watchlistApi = {
 
 // Alerts API
 export const alertsApi = {
-  getAlerts: (limit = 20, offset = 0) =>
-    apiRequest<{ alerts: Alert[]; total: number }>(
-      `/alerts/?limit=${limit}&offset=${offset}`
+  getAlerts: (page = 1, perPage = 20) =>
+    apiRequest<PaginatedAlerts>(
+      `/alerts/?page=${page}&per_page=${perPage}`
     ),
 
   getRecent: () =>
@@ -78,8 +78,10 @@ export const alertsApi = {
   getStats: () =>
     apiRequest<{ signals_today: number }>("/alerts/stats"),
 
-  getPerformance: () =>
-    apiRequest<PerformanceStats>("/alerts/performance"),
+  getPerformance: (page = 1, perPage = 20) =>
+    apiRequest<PerformanceStats>(
+      `/alerts/performance?page=${page}&per_page=${perPage}`
+    ),
 };
 
 // Market API
@@ -194,4 +196,19 @@ export interface PerformanceStats {
   win_rate: number;
   avg_return_7d: number;
   alerts: PerformanceAlert[];
+  pagination: PaginationMeta;
+}
+
+export interface PaginationMeta {
+  page: number;
+  per_page: number;
+  total: number;
+  total_pages: number;
+  has_next: boolean;
+  has_prev: boolean;
+}
+
+export interface PaginatedAlerts {
+  alerts: Alert[];
+  pagination: PaginationMeta;
 }

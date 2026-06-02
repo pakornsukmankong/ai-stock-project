@@ -1,9 +1,9 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
-import { alertsApi, type Alert } from "@/lib/api";
+import { alertsApi, type Alert, type PaginationMeta } from "@/lib/api";
 import { formatDate } from "@/lib/utils";
 import {
   Activity,
@@ -15,15 +15,36 @@ import {
 } from "lucide-react";
 
 const CONFIDENCE_OPTIONS = ["All", "High", "Medium", "Low"];
-const PAGE_SIZE = 10;
+const PER_PAGE = 20;
 
 export default function AlertsHistoryPage() {
   const [isLoading, setIsLoading] = useState(true);
   const [filterSymbol, setFilterSymbol] = useState("");
   const [filterConfidence, setFilterConfidence] = useState("All");
-  const [allAlerts, setAllAlerts] = useState<Alert[]>([]);
-  const [page, setPage] = useState(0);
+  const [alerts, setAlerts] = useState<Alert[]>([]);
+  const [pagination, setPagination] = useState<PaginationMeta>({
+    page: 1,
+    per_page: PER_PAGE,
+    total: 0,
+    total_pages: 1,
+    has_next: false,
+    has_prev: false,
+  });
+  const [page, setPage] = useState(1);
   const router = useRouter();
+
+  const fetchAlerts = useCallback(async (pageNum: number) => {
+    try {
+      setIsLoading(true);
+      const response = await alertsApi.getAlerts(pageNum, PER_PAGE);
+      setAlerts(response.alerts);
+      setPagination(response.pagination);
+    } catch {
+      // Handle error silently
+    } finally {
+      setIsLoading(false);
+    }
+  }, []);
 
   useEffect(() => {
     async function init() {
@@ -33,21 +54,19 @@ export default function AlertsHistoryPage() {
         router.push("/login");
         return;
       }
-
-      try {
-        const response = await alertsApi.getAlerts(100, 0);
-        setAllAlerts(response.alerts);
-      } catch {
-        // Handle error
-      } finally {
-        setIsLoading(false);
-      }
+      await fetchAlerts(1);
     }
     init();
-  }, [router]);
+  }, [router, fetchAlerts]);
 
-  // Apply filters
-  const filteredAlerts = allAlerts.filter((alert) => {
+  useEffect(() => {
+    if (page > 1 || alerts.length > 0) {
+      fetchAlerts(page);
+    }
+  }, [page, fetchAlerts, alerts.length]);
+
+  // Client-side filters (applied to current page data)
+  const filteredAlerts = alerts.filter((alert) => {
     const matchesSymbol =
       !filterSymbol || alert.stock_symbol.toLowerCase().includes(filterSymbol.toLowerCase());
     const matchesConfidence =
@@ -55,17 +74,22 @@ export default function AlertsHistoryPage() {
     return matchesSymbol && matchesConfidence;
   });
 
-  // Pagination
-  const totalPages = Math.ceil(filteredAlerts.length / PAGE_SIZE);
-  const paginatedAlerts = filteredAlerts.slice(
-    page * PAGE_SIZE,
-    (page + 1) * PAGE_SIZE
-  );
+  // Get unique symbols from current page
+  const uniqueSymbols = [...new Set(alerts.map((a) => a.stock_symbol))];
 
-  // Get unique symbols
-  const uniqueSymbols = [...new Set(allAlerts.map((a) => a.stock_symbol))];
+  const handlePrevPage = () => {
+    if (pagination.has_prev) {
+      setPage((prev) => prev - 1);
+    }
+  };
 
-  if (isLoading) {
+  const handleNextPage = () => {
+    if (pagination.has_next) {
+      setPage((prev) => prev + 1);
+    }
+  };
+
+  if (isLoading && alerts.length === 0) {
     return (
       <div className="flex h-screen items-center justify-center">
         <div className="flex items-center gap-2 font-mono text-sm text-terminal-green animate-pulse-green">
@@ -84,7 +108,7 @@ export default function AlertsHistoryPage() {
           <Bell className="h-5 w-5 text-terminal-green" />
           <h1 className="font-mono text-lg font-bold text-foreground">Alert History</h1>
           <span className="font-mono text-xs text-muted-foreground">
-            {filteredAlerts.length} alerts
+            {pagination.total} alerts
           </span>
         </div>
 
@@ -95,10 +119,7 @@ export default function AlertsHistoryPage() {
           <input
             type="text"
             value={filterSymbol}
-            onChange={(e) => {
-              setFilterSymbol(e.target.value);
-              setPage(0);
-            }}
+            onChange={(e) => setFilterSymbol(e.target.value)}
             placeholder="Filter by symbol..."
             className="w-40 rounded-md border border-terminal-border bg-terminal-dark px-3 py-1.5 font-mono text-xs text-foreground placeholder:text-muted-foreground focus:border-terminal-green/50 focus:outline-none"
           />
@@ -107,10 +128,7 @@ export default function AlertsHistoryPage() {
             {CONFIDENCE_OPTIONS.map((option) => (
               <button
                 key={option}
-                onClick={() => {
-                  setFilterConfidence(option);
-                  setPage(0);
-                }}
+                onClick={() => setFilterConfidence(option)}
                 className={`px-2.5 py-1.5 font-mono text-[10px] transition-all ${
                   filterConfidence === option
                     ? "bg-terminal-green/10 text-terminal-green"
@@ -127,10 +145,7 @@ export default function AlertsHistoryPage() {
               {uniqueSymbols.map((sym) => (
                 <button
                   key={sym}
-                  onClick={() => {
-                    setFilterSymbol(filterSymbol === sym ? "" : sym);
-                    setPage(0);
-                  }}
+                  onClick={() => setFilterSymbol(filterSymbol === sym ? "" : sym)}
                   className={`rounded px-2 py-1 font-mono text-[10px] transition-all ${
                     filterSymbol === sym
                       ? "bg-terminal-green/10 text-terminal-green border border-terminal-green/30"
@@ -145,41 +160,41 @@ export default function AlertsHistoryPage() {
         </div>
 
         {/* Alert List */}
-        {paginatedAlerts.length === 0 ? (
+        {filteredAlerts.length === 0 ? (
           <div className="rounded-lg border border-terminal-border bg-terminal-panel p-12 text-center">
             <Bell className="mx-auto h-8 w-8 text-muted-foreground" />
             <p className="mt-3 font-mono text-xs text-muted-foreground">
-              {allAlerts.length === 0
+              {pagination.total === 0
                 ? "No alerts yet. Alerts will appear here when buy signals are detected."
                 : "No alerts match your filters."}
             </p>
           </div>
         ) : (
           <div className="space-y-2">
-            {paginatedAlerts.map((alert) => (
+            {filteredAlerts.map((alert) => (
               <AlertCard key={alert.id} alert={alert} />
             ))}
           </div>
         )}
 
         {/* Pagination */}
-        {totalPages > 1 && (
+        {pagination.total_pages > 1 && (
           <div className="mt-4 flex items-center justify-between rounded-lg border border-terminal-border bg-terminal-panel px-4 py-3">
             <span className="font-mono text-xs text-muted-foreground">
-              Page {page + 1} of {totalPages}
+              Page {pagination.page} of {pagination.total_pages} ({pagination.total} total)
             </span>
             <div className="flex gap-2">
               <button
-                onClick={() => setPage(Math.max(0, page - 1))}
-                disabled={page === 0}
+                onClick={handlePrevPage}
+                disabled={!pagination.has_prev}
                 className="flex items-center gap-1 rounded-md border border-terminal-border px-2 py-1 font-mono text-xs text-muted-foreground transition-all hover:border-terminal-green/50 hover:text-terminal-green disabled:opacity-30"
               >
                 <ChevronLeft className="h-3 w-3" />
                 Prev
               </button>
               <button
-                onClick={() => setPage(Math.min(totalPages - 1, page + 1))}
-                disabled={page >= totalPages - 1}
+                onClick={handleNextPage}
+                disabled={!pagination.has_next}
                 className="flex items-center gap-1 rounded-md border border-terminal-border px-2 py-1 font-mono text-xs text-muted-foreground transition-all hover:border-terminal-green/50 hover:text-terminal-green disabled:opacity-30"
               >
                 Next
