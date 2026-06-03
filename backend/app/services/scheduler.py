@@ -168,6 +168,9 @@ class AnalysisScheduler:
                 mtf_1h_rsi=mtf_result.one_hour.indicators.rsi if mtf_result and mtf_result.one_hour.indicators else 0.0,
                 mtf_bonus=signal.mtf_bonus,
                 mtf_penalty=signal.mtf_penalty,
+                # Historical Candle Data
+                weekly_candles=self._build_weekly_candles(df),
+                daily_candles=self._build_recent_daily_candles(df),
             )
 
             # Step 7: AI analysis (with cache)
@@ -185,6 +188,68 @@ class AnalysisScheduler:
 
         except Exception as e:
             print(f"Error analyzing {symbol}: {e}")
+
+    def _build_weekly_candles(self, df) -> list[dict]:
+        """Resample daily data to weekly candles (52 weeks = 1 year overview).
+
+        Provides AI with long-term price structure:
+        - Major support/resistance zones
+        - Overall trend direction
+        - Historical highs/lows
+        """
+        try:
+            weekly = df.resample("W").agg({
+                "open": "first",
+                "high": "max",
+                "low": "min",
+                "close": "last",
+                "volume": "sum",
+            }).dropna()
+
+            # Take last 52 weeks
+            weekly = weekly.tail(52)
+
+            candles = []
+            for idx, row in weekly.iterrows():
+                candles.append({
+                    "date": idx.strftime("%Y-%m-%d"),
+                    "o": round(row["open"], 2),
+                    "h": round(row["high"], 2),
+                    "l": round(row["low"], 2),
+                    "c": round(row["close"], 2),
+                    "v": int(row["volume"]),
+                })
+            return candles
+        except Exception as e:
+            print(f"Error building weekly candles: {e}")
+            return []
+
+    def _build_recent_daily_candles(self, df) -> list[dict]:
+        """Get last 30 daily candles for recent price action context.
+
+        Provides AI with short-term context:
+        - Recent momentum and volume patterns
+        - Consolidation/breakout detection
+        - Gap up/down identification
+        - Recent support/resistance tests
+        """
+        try:
+            recent = df.tail(30)
+
+            candles = []
+            for idx, row in recent.iterrows():
+                candles.append({
+                    "date": idx.strftime("%Y-%m-%d"),
+                    "o": round(row["open"], 2),
+                    "h": round(row["high"], 2),
+                    "l": round(row["low"], 2),
+                    "c": round(row["close"], 2),
+                    "v": int(row["volume"]),
+                })
+            return candles
+        except Exception as e:
+            print(f"Error building daily candles: {e}")
+            return []
 
     async def _notify_users(
         self,

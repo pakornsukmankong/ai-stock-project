@@ -14,7 +14,7 @@ class AIAnalysisService:
     Uses analysis cache to prevent repeated AI calls for the same stock.
     """
 
-    SYSTEM_PROMPT = """You are an expert stock trading analyst. You receive comprehensive technical indicator data including multi-timeframe analysis and must decide: BUY, SELL, or HOLD.
+    SYSTEM_PROMPT = """You are an expert stock trading analyst. You receive comprehensive technical indicator data, multi-timeframe analysis, AND historical price data (weekly + daily candles) to make informed decisions: BUY, SELL, or HOLD.
 
 Your response MUST be valid JSON with this exact format:
 {
@@ -25,9 +25,16 @@ Your response MUST be valid JSON with this exact format:
 }
 
 Decision guidelines:
-- BUY: Strong bullish alignment across multiple indicators AND timeframes, good risk/reward
-- SELL: Bearish signals, overbought conditions, breakdown from support
+- BUY: Strong bullish alignment across multiple indicators AND timeframes, supported by historical price structure
+- SELL: Bearish signals, overbought conditions, breakdown from support, or at major resistance
 - HOLD: Mixed signals, no clear edge, wait for confirmation
+
+Historical Price Analysis:
+- Use WEEKLY candles (52 weeks) to identify: major trend, key support/resistance zones, 52-week high/low context
+- Use DAILY candles (30 days) to identify: recent momentum, consolidation/breakout, volume patterns, gaps
+- A breakout above 52-week resistance with volume = strong BUY
+- Price at major resistance from weekly chart = caution even if indicators are bullish
+- Recent consolidation with declining volume then breakout = strong BUY setup
 
 Multi-Timeframe Analysis rules:
 - If higher timeframes (Daily/4H) confirm bullish trend → STRONGER BUY confidence
@@ -35,12 +42,13 @@ Multi-Timeframe Analysis rules:
 - All timeframes aligned bullish = highest confidence BUY
 - Conflicting timeframes = reduce confidence or HOLD
 
-Consider ALL indicators holistically:
+Consider ALL data holistically:
+- Historical Price Structure: Weekly/Daily candles for context
 - Trend: EMA alignment, SuperTrend direction, MACD crossover
 - Momentum: RSI state, Stochastic crossover
 - Volatility: Bollinger Band position, ATR for risk assessment
 - Structure: Pivot levels (support/resistance), candlestick patterns
-- Volume: Accumulation or distribution
+- Volume: Accumulation or distribution patterns in historical data
 - Multi-Timeframe: Trend/momentum confirmation across 1H/4H/Daily
 
 Be decisive. Respond ONLY with the JSON object, no other text."""
@@ -111,7 +119,7 @@ Be decisive. Respond ONLY with the JSON object, no other text."""
                     {"role": "system", "content": self.SYSTEM_PROMPT},
                     {"role": "user", "content": user_message},
                 ],
-                max_tokens=300,
+                max_tokens=500,
                 temperature=0.2,
             )
 
@@ -126,7 +134,7 @@ Be decisive. Respond ONLY with the JSON object, no other text."""
             return None
 
     def _build_indicator_message(self, s: StockSignalSummary) -> str:
-        """Build comprehensive indicator message for AI including MTF data."""
+        """Build comprehensive indicator message for AI including MTF and historical data."""
         mtf_section = ""
         if s.mtf_trend_alignment != "not_available":
             mtf_section = (
@@ -137,6 +145,50 @@ Be decisive. Respond ONLY with the JSON object, no other text."""
                 f"1H Trend: {s.mtf_1h_trend} | RSI: {s.mtf_1h_rsi:.1f}\n"
                 f"MTF Score Adjustment: +{s.mtf_bonus} bonus, -{s.mtf_penalty} penalty\n"
             )
+
+        # Build weekly candles section
+        weekly_section = ""
+        if s.weekly_candles:
+            weekly_section = "\n--- WEEKLY CANDLES (1 Year, oldest→newest) ---\n"
+            weekly_section += "Date       | Open    | High    | Low     | Close   | Volume\n"
+            for c in s.weekly_candles:
+                weekly_section += (
+                    f"{c['date']} | ${c['o']:>7.2f} | ${c['h']:>7.2f} | "
+                    f"${c['l']:>7.2f} | ${c['c']:>7.2f} | {c['v']:>10,}\n"
+                )
+            # Add computed context
+            if len(s.weekly_candles) >= 2:
+                first_close = s.weekly_candles[0]["c"]
+                last_close = s.weekly_candles[-1]["c"]
+                year_return = ((last_close - first_close) / first_close) * 100
+                year_high = max(c["h"] for c in s.weekly_candles)
+                year_low = min(c["l"] for c in s.weekly_candles)
+                weekly_section += (
+                    f"\n52-Week Summary: Return={year_return:+.1f}%, "
+                    f"High=${year_high:.2f}, Low=${year_low:.2f}, "
+                    f"Current vs High={((last_close/year_high)-1)*100:.1f}%\n"
+                )
+
+        # Build daily candles section
+        daily_section = ""
+        if s.daily_candles:
+            daily_section = "\n--- RECENT DAILY CANDLES (30 days, oldest→newest) ---\n"
+            daily_section += "Date       | Open    | High    | Low     | Close   | Volume\n"
+            for c in s.daily_candles:
+                daily_section += (
+                    f"{c['date']} | ${c['o']:>7.2f} | ${c['h']:>7.2f} | "
+                    f"${c['l']:>7.2f} | ${c['c']:>7.2f} | {c['v']:>10,}\n"
+                )
+            # Add recent context
+            if len(s.daily_candles) >= 5:
+                last_5_closes = [c["c"] for c in s.daily_candles[-5:]]
+                last_5_volumes = [c["v"] for c in s.daily_candles[-5:]]
+                avg_recent_vol = sum(last_5_volumes) / 5
+                recent_momentum = ((last_5_closes[-1] - last_5_closes[0]) / last_5_closes[0]) * 100
+                daily_section += (
+                    f"\n5-Day Momentum: {recent_momentum:+.2f}%, "
+                    f"Avg Volume (5d): {int(avg_recent_vol):,}\n"
+                )
 
         return (
             f"=== {s.symbol} Analysis ===\n"
@@ -165,10 +217,12 @@ Be decisive. Respond ONLY with the JSON object, no other text."""
             f"S1: ${s.s1:.2f} | S2: ${s.s2:.2f}\n\n"
             f"--- PATTERNS ---\n"
             f"Candlestick: {', '.join(s.candle_patterns) if s.candle_patterns else 'None'}\n"
-            f"{mtf_section}\n"
+            f"{mtf_section}"
+            f"{weekly_section}"
+            f"{daily_section}\n"
             f"--- SIGNAL ENGINE ---\n"
             f"Reasons: {', '.join(s.signal_reasons) if s.signal_reasons else 'None'}\n\n"
-            f"Based on ALL the above data including multi-timeframe alignment, what is your decision: BUY, SELL, or HOLD?"
+            f"Based on ALL data (indicators, multi-timeframe, AND historical price action), what is your decision: BUY, SELL, or HOLD?"
         )
 
     def _parse_ai_response(self, ai_text: str, summary: StockSignalSummary) -> Optional[AIAnalysisResult]:

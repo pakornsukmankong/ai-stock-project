@@ -50,13 +50,19 @@ class StockSignalSummary(BaseModel):
     signal_reasons: list[str] = []
 
     # Multi-Timeframe Analysis
-    mtf_trend_alignment: str = "not_available"  # strong_bullish, bullish, neutral, bearish, conflicting
-    mtf_4h_trend: str = "n/a"  # bullish, bearish, neutral
-    mtf_1h_trend: str = "n/a"  # bullish, bearish, neutral
+    mtf_trend_alignment: str = "not_available"
+    mtf_4h_trend: str = "n/a"
+    mtf_1h_trend: str = "n/a"
     mtf_4h_rsi: float = 0.0
     mtf_1h_rsi: float = 0.0
     mtf_bonus: int = 0
     mtf_penalty: int = 0
+
+    # Historical Candle Data
+    # Weekly candles (52 weeks = 1 year overview)
+    weekly_candles: list[dict] = []
+    # Recent daily candles (last 30 days for short-term context)
+    daily_candles: list[dict] = []
 
 
 class AIAnalysisResult(BaseModel):
