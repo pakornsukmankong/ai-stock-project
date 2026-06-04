@@ -82,6 +82,11 @@ export const alertsApi = {
     apiRequest<PerformanceStats>(
       `/alerts/performance?page=${page}&per_page=${perPage}`
     ),
+
+  clearPerformance: () =>
+    apiRequest<{ message: string }>("/alerts/performance/clear", {
+      method: "DELETE",
+    }),
 };
 
 // Market API

@@ -184,3 +184,24 @@ async def get_recent_alerts(user_id: str = Depends(get_current_user_id)):
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/performance/clear")
+async def clear_performance_data(user_id: str = Depends(get_current_user_id)):
+    """Clear all performance tracking alerts (BUY signals with price data) for the user."""
+    try:
+        supabase = get_supabase_client()
+
+        # Delete all BUY alerts that have alert_price (performance tracked ones)
+        supabase.table("alerts").delete().eq(
+            "user_id", user_id
+        ).eq(
+            "signal_type", "BUY"
+        ).not_.is_(
+            "alert_price", "null"
+        ).execute()
+
+        return {"message": "Performance tracking data cleared successfully"}
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))

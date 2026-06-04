@@ -5,13 +5,15 @@ import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 import { alertsApi, type PerformanceStats, type PerformanceAlert, type PaginationMeta } from "@/lib/api";
 import { formatDate } from "@/lib/utils";
-import { Activity, TrendingUp, TrendingDown, Target, ChevronLeft, ChevronRight } from "lucide-react";
+import { Activity, TrendingUp, TrendingDown, Target, ChevronLeft, ChevronRight, Trash2 } from "lucide-react";
 
 const PER_PAGE = 20;
 
 export default function PerformancePage() {
   const [stats, setStats] = useState<PerformanceStats | null>(null);
   const [isLoading, setIsLoading] = useState(true);
+  const [isClearing, setIsClearing] = useState(false);
+  const [showConfirm, setShowConfirm] = useState(false);
   const [page, setPage] = useState(1);
   const router = useRouter();
 
@@ -41,7 +43,7 @@ export default function PerformancePage() {
   }, [router, fetchPerformance]);
 
   useEffect(() => {
-    if (page > 1) {
+    if (stats) {
       fetchPerformance(page);
     }
   }, [page, fetchPerformance]);
@@ -79,16 +81,63 @@ export default function PerformancePage() {
     }
   };
 
+  const handleClearPerformance = async () => {
+    try {
+      setIsClearing(true);
+      await alertsApi.clearPerformance();
+      setShowConfirm(false);
+      setPage(1);
+      await fetchPerformance(1);
+    } catch {
+      // Handle error
+    } finally {
+      setIsClearing(false);
+    }
+  };
+
   return (
     <main className="p-6">
       <div className="mx-auto max-w-4xl">
         {/* Header */}
-        <div className="mb-6 flex items-center gap-3">
-          <Target className="h-5 w-5 text-terminal-green" />
-          <h1 className="font-mono text-lg font-bold text-foreground">Performance Tracking</h1>
-          <span className="font-mono text-xs text-muted-foreground">
-            {stats.total_alerts} alerts
-          </span>
+        <div className="mb-6 flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <Target className="h-5 w-5 text-terminal-green" />
+            <h1 className="font-mono text-lg font-bold text-foreground">Performance Tracking</h1>
+            <span className="font-mono text-xs text-muted-foreground">
+              {stats.total_alerts} alerts
+            </span>
+          </div>
+
+          {stats.total_alerts > 0 && (
+            <div className="relative">
+              {showConfirm ? (
+                <div className="flex items-center gap-2 rounded-lg border border-terminal-red/30 bg-terminal-red/5 px-3 py-2">
+                  <span className="font-mono text-xs text-terminal-red">Clear all data?</span>
+                  <button
+                    onClick={handleClearPerformance}
+                    disabled={isClearing}
+                    className="rounded-md bg-terminal-red/20 px-2 py-1 font-mono text-xs text-terminal-red hover:bg-terminal-red/30 disabled:opacity-50"
+                  >
+                    {isClearing ? "Clearing..." : "Confirm"}
+                  </button>
+                  <button
+                    onClick={() => setShowConfirm(false)}
+                    className="rounded-md border border-terminal-border px-2 py-1 font-mono text-xs text-muted-foreground hover:text-foreground"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              ) : (
+                <button
+                  onClick={() => setShowConfirm(true)}
+                  className="flex items-center gap-1.5 rounded-md border border-terminal-border px-3 py-1.5 font-mono text-xs text-muted-foreground transition-all hover:border-terminal-red/50 hover:text-terminal-red"
+                >
+                  <Trash2 className="h-3 w-3" />
+                  Clear All
+                </button>
+              )}
+            </div>
+          )}
         </div>
 
         {/* Stats Cards */}

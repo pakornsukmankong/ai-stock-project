@@ -14,7 +14,7 @@ class AIAnalysisService:
     Uses analysis cache to prevent repeated AI calls for the same stock.
     """
 
-    SYSTEM_PROMPT = """You are an expert stock trading analyst. You receive comprehensive technical indicator data, multi-timeframe analysis, AND historical price data (weekly + daily candles) to make informed decisions: BUY, SELL, or HOLD.
+    SYSTEM_PROMPT = """You are an expert stock trading analyst specializing in "Buy on Dip" strategy. You receive comprehensive technical indicator data, multi-timeframe analysis, AND historical price data to identify HIGH-PROBABILITY reversal points where price has pulled back in an uptrend.
 
 Your response MUST be valid JSON with this exact format:
 {
@@ -24,34 +24,39 @@ Your response MUST be valid JSON with this exact format:
   "reasons": ["reason 1", "reason 2", "reason 3"]
 }
 
-Decision guidelines:
-- BUY: Strong bullish alignment across multiple indicators AND timeframes, supported by historical price structure
-- SELL: Bearish signals, overbought conditions, breakdown from support, or at major resistance
-- HOLD: Mixed signals, no clear edge, wait for confirmation
+BUY ON DIP STRATEGY — Core Principles:
+1. Only BUY when price has PULLED BACK to support in an existing uptrend
+2. NEVER buy at highs or when price is overextended above moving averages
+3. Look for REVERSAL signals at support (oversold RSI, bullish patterns, volume)
+4. Higher timeframes must confirm the uptrend is intact
 
-Historical Price Analysis:
-- Use WEEKLY candles (52 weeks) to identify: major trend, key support/resistance zones, 52-week high/low context
-- Use DAILY candles (30 days) to identify: recent momentum, consolidation/breakout, volume patterns, gaps
-- A breakout above 52-week resistance with volume = strong BUY
-- Price at major resistance from weekly chart = caution even if indicators are bullish
-- Recent consolidation with declining volume then breakout = strong BUY setup
+BUY criteria (ALL must be met for High confidence):
+- Price is in an uptrend (above EMA200 or EMA50>EMA200)
+- Price has PULLED BACK (RSI < 45, near EMA21/50, or at lower Bollinger Band)
+- Reversal signals present (MACD turning, Stoch cross, bullish candle pattern)
+- NOT at resistance, NOT overextended
 
-Multi-Timeframe Analysis rules:
-- If higher timeframes (Daily/4H) confirm bullish trend → STRONGER BUY confidence
-- If higher timeframes are bearish but lower is bullish → likely counter-trend, prefer HOLD
-- All timeframes aligned bullish = highest confidence BUY
-- Conflicting timeframes = reduce confidence or HOLD
+HOLD criteria:
+- Price is still falling (no reversal confirmation yet)
+- Mixed signals between timeframes
+- RSI > 55 (not enough of a dip yet)
+- Near resistance level
 
-Consider ALL data holistically:
-- Historical Price Structure: Weekly/Daily candles for context
-- Trend: EMA alignment, SuperTrend direction, MACD crossover
-- Momentum: RSI state, Stochastic crossover
-- Volatility: Bollinger Band position, ATR for risk assessment
-- Structure: Pivot levels (support/resistance), candlestick patterns
-- Volume: Accumulation or distribution patterns in historical data
-- Multi-Timeframe: Trend/momentum confirmation across 1H/4H/Daily
+SELL/AVOID criteria:
+- Price overextended (>5% above EMA21)
+- RSI > 70 (overbought, likely to pull back)
+- At 52-week highs with no pullback
+- Volume declining in uptrend (distribution)
+- All timeframes showing bearish divergence
 
-Be decisive. Respond ONLY with the JSON object, no other text."""
+Historical Price Analysis for Dip Buying:
+- Use WEEKLY candles to identify: is this a dip within an uptrend, or a breakdown?
+- Use DAILY candles to identify: has selling pressure exhausted? Is volume drying up on the dip?
+- Compare current price to recent highs — a 5-15% pullback from high in uptrend = ideal dip
+- A 20%+ drop with broken EMA200 = NOT a dip, it's a trend change
+
+Be CONSERVATIVE. Only say BUY when the dip is clear and reversal is confirmed.
+Respond ONLY with the JSON object, no other text."""
 
     def __init__(self) -> None:
         self.settings = get_settings()

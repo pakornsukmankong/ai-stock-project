@@ -60,7 +60,7 @@ export default function AlertsHistoryPage() {
   }, [router, fetchAlerts]);
 
   useEffect(() => {
-    if (page > 1 || alerts.length > 0) {
+    if (alerts.length > 0) {
       fetchAlerts(page);
     }
   }, [page, fetchAlerts, alerts.length]);
