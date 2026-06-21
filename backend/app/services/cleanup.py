@@ -1,11 +1,11 @@
 from datetime import datetime, timedelta, timezone
 from app.core.database import get_supabase_client
 
-ALERTS_RETENTION_DAYS = 7
+ALERTS_RETENTION_DAYS = 30
 
 
 async def cleanup_old_alerts() -> None:
-    """Delete alerts older than 7 days and expired analysis cache."""
+    """Delete alerts older than 30 days and expired analysis cache."""
     try:
         supabase = get_supabase_client()
         cutoff = (datetime.now(timezone.utc) - timedelta(days=ALERTS_RETENTION_DAYS)).isoformat()
