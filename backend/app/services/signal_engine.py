@@ -198,12 +198,19 @@ class SignalEngine:
         is_stoch_oversold_turning = ind.stoch_k < 30 and ind.stoch_k > ind.stoch_d
         is_stoch_oversold = ind.stoch_k < 25
         is_near_lower_bb = ind.bb_position in ("near_lower", "below_lower")
+        has_divergence = ind.rsi_bullish_divergence or ind.macd_bullish_divergence
 
         # Deep dip: RSI oversold + Stoch oversold + near support
         if ind.rsi < 30 and is_stoch_oversold and is_near_lower_bb:
             score = 25
             reasons.append(f"Deep dip: RSI {ind.rsi:.1f} oversold + Stoch {ind.stoch_k:.0f} + at lower BB")
             status = "deep_dip"
+        elif has_divergence and is_uptrend and (is_near_or_below_ema21 or is_near_lower_bb) and ind.rsi < 50:
+            # Strong uptrends rarely hit RSI<30; divergence lets a shallower
+            # pullback still qualify as a high-quality dip.
+            score = 23
+            reasons.append(f"Divergence dip: bullish divergence at pullback (RSI {ind.rsi:.1f})")
+            status = "divergence_dip"
         elif ind.rsi < 35 and is_near_or_below_ema21 and is_uptrend:
             score = 22
             reasons.append(f"Strong pullback: RSI {ind.rsi:.1f} + price at/below EMA21 in uptrend")
@@ -237,42 +244,46 @@ class SignalEngine:
     def _score_reversal_confirmation(self, ind: IndicatorResult, reasons: list) -> tuple:
         """Score reversal confirmation signals (max 20 pts).
 
-        After detecting a dip, we need confirmation that price is turning back up.
-        - MACD histogram turning positive (momentum shift) = strong
-        - MACD approaching zero from below (early turn) = moderate
-        - Stochastic bullish cross in oversold = strong timing signal
+        After detecting a dip we need confirmation that price is actually TURNING
+        back up. These rely on transition flags computed on closed bars (real
+        crosses, not just current states), plus bullish divergence — the single
+        strongest classic reversal signal.
         """
-        histogram = ind.macd_histogram
-        macd = ind.macd_value
-        signal = ind.macd_signal
+        # Real transitions detected on closed bars (see IndicatorEngine).
+        is_macd_bullish_cross = ind.macd_bullish_cross
+        is_macd_turning = ind.macd_turning_up
+        is_stoch_bullish_cross = ind.stoch_bullish_cross and ind.stoch_k < 50
+        has_divergence = ind.rsi_bullish_divergence or ind.macd_bullish_divergence
 
-        # MACD just crossed bullish (histogram turned positive recently)
-        is_macd_bullish_cross = histogram > 0 and macd > signal
-        # MACD turning — histogram negative but improving (less negative)
-        is_macd_turning = -0.2 < histogram < 0 and macd > signal * 0.98
-
-        # Stochastic confirmation
-        is_stoch_bullish_cross = ind.stoch_k > ind.stoch_d and ind.stoch_k < 50
-
-        if is_macd_bullish_cross and is_stoch_bullish_cross:
+        if has_divergence and (is_macd_bullish_cross or is_stoch_bullish_cross):
             score = 20
-            reasons.append("Reversal confirmed: MACD bullish cross + Stoch bullish in oversold zone")
+            div_kind = "RSI" if ind.rsi_bullish_divergence else "MACD"
+            reasons.append(f"Strong reversal: bullish {div_kind} divergence + momentum cross")
+            status = "divergence_cross"
+        elif is_macd_bullish_cross and is_stoch_bullish_cross:
+            score = 18
+            reasons.append("Reversal confirmed: MACD bullish cross + Stoch cross below 50")
             status = "strong_reversal"
-        elif is_macd_bullish_cross:
+        elif has_divergence:
+            div_kind = "RSI" if ind.rsi_bullish_divergence else "MACD"
             score = 15
-            reasons.append("MACD bullish crossover — momentum turning up")
+            reasons.append(f"Bullish {div_kind} divergence — price falling but momentum rising")
+            status = "divergence"
+        elif is_macd_bullish_cross:
+            score = 13
+            reasons.append("MACD bullish crossover — histogram flipped positive")
             status = "macd_reversal"
         elif is_macd_turning and is_stoch_bullish_cross:
-            score = 12
-            reasons.append("Early reversal: MACD turning + Stoch cross below 50")
+            score = 11
+            reasons.append("Early reversal: MACD histogram rising + Stoch cross below 50")
             status = "early_reversal"
         elif is_stoch_bullish_cross and ind.stoch_k < 30:
-            score = 10
+            score = 9
             reasons.append(f"Stochastic bullish cross at {ind.stoch_k:.0f} (oversold zone)")
             status = "stoch_reversal"
         elif is_macd_turning:
-            score = 7
-            reasons.append("MACD momentum improving (turning less negative)")
+            score = 6
+            reasons.append("MACD histogram turning up (rising while still negative)")
             status = "momentum_improving"
         else:
             score = 0
