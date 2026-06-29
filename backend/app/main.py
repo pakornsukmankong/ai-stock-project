@@ -99,8 +99,11 @@ app.add_middleware(
     allow_origins=[
         "http://localhost:3000",
         "https://ai-stock-project-five.vercel.app",
-        "https://*.vercel.app",
     ],
+    # Match Vercel preview deployments (e.g. https://ai-stock-project-xxx.vercel.app).
+    # CORSMiddleware does exact-string matching on allow_origins, so a literal
+    # "https://*.vercel.app" entry never matches — a regex is required.
+    allow_origin_regex=r"https://.*\.vercel\.app",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

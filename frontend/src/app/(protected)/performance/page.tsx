@@ -6,10 +6,12 @@ import { createClient } from "@/lib/supabase/client";
 import { alertsApi, type PerformanceStats, type PerformanceAlert, type PaginationMeta } from "@/lib/api";
 import { formatDate } from "@/lib/utils";
 import { Activity, TrendingUp, TrendingDown, Target, ChevronLeft, ChevronRight, Trash2 } from "lucide-react";
+import { useToast } from "@/components/toast";
 
 const PER_PAGE = 20;
 
 export default function PerformancePage() {
+  const { success, error: toastError } = useToast();
   const [stats, setStats] = useState<PerformanceStats | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [isClearing, setIsClearing] = useState(false);
@@ -23,11 +25,11 @@ export default function PerformancePage() {
       const response = await alertsApi.getPerformance(pageNum, PER_PAGE);
       setStats(response);
     } catch {
-      // Handle error
+      toastError("Failed to load performance data");
     } finally {
       setIsLoading(false);
     }
-  }, []);
+  }, [toastError]);
 
   useEffect(() => {
     async function init() {
@@ -88,8 +90,9 @@ export default function PerformancePage() {
       setShowConfirm(false);
       setPage(1);
       await fetchPerformance(1);
+      success("Performance data cleared");
     } catch {
-      // Handle error
+      toastError("Failed to clear performance data");
     } finally {
       setIsClearing(false);
     }

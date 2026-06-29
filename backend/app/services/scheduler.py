@@ -8,7 +8,7 @@ from app.services.indicator_engine import IndicatorEngine
 from app.services.signal_engine import SignalEngine
 from app.services.mtf_engine import MTFEngine
 from app.services.ai_analysis import AIAnalysisService
-from app.services.line_notification import LineNotificationService
+from app.services.line_notification import LineNotificationService, MONTHLY_LIMIT, SENT
 from app.schemas.stock import StockSignalSummary
 
 
@@ -53,8 +53,13 @@ class AnalysisScheduler:
                 monitor.log_scheduler_success()
                 return
 
+            # Collect buy signals per user across the whole cycle so each user
+            # receives ONE digest message instead of one push per signal.
+            pending: dict[str, dict] = {}
             for symbol in symbols:
-                await self._analyze_symbol(symbol)
+                await self._analyze_symbol(symbol, pending)
+
+            await self._dispatch_notifications(pending)
 
             print(f"[{datetime.now(timezone.utc)}] Analysis cycle complete.")
             monitor.log_scheduler_success()
@@ -78,7 +83,7 @@ class AnalysisScheduler:
             print(f"Error fetching active symbols: {e}")
             return []
 
-    async def _analyze_symbol(self, symbol: str) -> None:
+    async def _analyze_symbol(self, symbol: str, pending: dict) -> None:
         """Run full analysis pipeline for a single stock symbol with multi-timeframe."""
         try:
             # Step 1: Fetch daily market data (primary timeframe)
@@ -91,21 +96,13 @@ class AnalysisScheduler:
             if indicators is None:
                 return
 
-            # Step 3: Run Multi-Timeframe analysis (4H + 1H)
+            # Step 3: Run Multi-Timeframe analysis (4H + 1H), reusing the daily
+            # indicators we already computed above (no redundant daily fetch).
             mtf_result = None
             try:
-                mtf_result = await self.mtf_engine.analyze(symbol)
-                # Use daily indicators from our own calculation (more reliable)
-                if mtf_result and mtf_result.daily.indicators is None:
-                    from app.services.mtf_engine import TimeframeAnalysis
-                    mtf_result.daily = TimeframeAnalysis(timeframe="1d")
-                    mtf_result.daily.indicators = indicators
-                    mtf_result.daily.is_valid = True
-                    mtf_result.daily.trend_direction = self.mtf_engine._classify_trend(indicators)
-                    mtf_result.daily.momentum_state = self.mtf_engine._classify_momentum(indicators)
-                    mtf_result.daily.macd_state = self.mtf_engine._classify_macd(indicators)
-                    # Recalculate confluence with updated daily
-                    self.mtf_engine._calculate_confluence(mtf_result)
+                mtf_result = await self.mtf_engine.analyze(
+                    symbol, daily_df=df, daily_indicators=indicators
+                )
             except Exception as e:
                 print(f"  MTF analysis failed for {symbol} (using single TF): {e}")
                 mtf_result = None
@@ -183,8 +180,9 @@ class AnalysisScheduler:
                 print(f"  AI decision for {symbol}: {analysis.action} — skipping notification")
                 return
 
-            # Step 8: Notify all users watching this stock
-            await self._notify_users(symbol, analysis, indicators.current_price)
+            # Step 8: Queue this signal for every user watching the stock
+            # (sent as a digest at the end of the cycle).
+            await self._collect_users(symbol, analysis, indicators.current_price, pending)
 
         except Exception as e:
             print(f"Error analyzing {symbol}: {e}")
@@ -251,13 +249,14 @@ class AnalysisScheduler:
             print(f"Error building daily candles: {e}")
             return []
 
-    async def _notify_users(
+    async def _collect_users(
         self,
         symbol: str,
         analysis: "AIAnalysisResult",
         price: float,
+        pending: dict,
     ) -> None:
-        """Send notifications to all users watching this stock."""
+        """Queue this signal for every eligible user into the per-user digest buckets."""
         try:
             # Get users watching this symbol with LINE connected
             response = (
@@ -278,7 +277,7 @@ class AnalysisScheduler:
 
                 user_id = watchlist.get("user_id")
 
-                # Check duplicate: skip if already alerted within 24 hours
+                # Check duplicate: skip if already alerted recently
                 if await self._has_recent_alert(user_id, symbol):
                     continue
 
@@ -287,19 +286,68 @@ class AnalysisScheduler:
                 if not self._meets_confidence_preference(analysis.confidence, min_confidence):
                     continue
 
-                # Send LINE notification
-                is_sent = await self.line_service.send_buy_alert(
-                    line_user_id=line_user_id,
-                    analysis=analysis,
-                    price=price,
+                bucket = pending.setdefault(
+                    user_id, {"line_user_id": line_user_id, "items": []}
+                )
+                bucket["items"].append(
+                    {"symbol": symbol, "analysis": analysis, "price": price}
                 )
 
-                # Save alert history
-                if is_sent:
-                    await self._save_alert(user_id, symbol, analysis, price)
-
         except Exception as e:
-            print(f"Error notifying users for {symbol}: {e}")
+            print(f"Error collecting users for {symbol}: {e}")
+
+    async def _dispatch_notifications(self, pending: dict) -> None:
+        """Send one digest per user, with LINE monthly-quota awareness.
+
+        - If the LINE monthly quota is exhausted, skip sending but still persist
+          alerts to the DB so users can see them on the dashboard (fallback).
+        - Transient LINE failures are NOT persisted, so they are retried on the
+          next cycle.
+        """
+        if not pending:
+            return
+
+        # Check the LINE monthly quota once before sending the batch.
+        monthly_limit_hit = False
+        quota = await self.line_service.get_quota_status()
+        if (
+            quota["type"] == "limited"
+            and quota.get("remaining") is not None
+            and quota["remaining"] <= 0
+        ):
+            monthly_limit_hit = True
+            print(
+                f"[LINE] Monthly quota exhausted ({quota['used']}/{quota['limit']}). "
+                f"Saving alerts to DB only (dashboard fallback)."
+            )
+
+        for user_id, bucket in pending.items():
+            items = bucket["items"]
+            should_save = False
+
+            if monthly_limit_hit:
+                # Known-exhausted: DB-only fallback, don't even attempt LINE.
+                should_save = True
+            else:
+                message = self.line_service.format_digest(items)
+                status = await self.line_service.send_text(bucket["line_user_id"], message)
+
+                if status == SENT:
+                    should_save = True
+                elif status == MONTHLY_LIMIT:
+                    # Quota ran out mid-batch — fall back to DB for this and the rest.
+                    monthly_limit_hit = True
+                    should_save = True
+                else:
+                    # Transient (rate limit / other failure): leave unsaved so the
+                    # next cycle retries delivery.
+                    print(f"[LINE] Delivery failed for {user_id} ({status}); will retry next cycle.")
+
+            if should_save:
+                for item in items:
+                    await self._save_alert(
+                        user_id, item["symbol"], item["analysis"], item["price"]
+                    )
 
     async def _has_recent_alert(self, user_id: str, symbol: str) -> bool:
         """Check if user already received an alert for this stock within 1 hour."""

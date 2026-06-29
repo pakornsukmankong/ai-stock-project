@@ -5,17 +5,17 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 import { Activity } from "lucide-react";
+import { useToast } from "@/components/toast";
 
 export default function LoginPage() {
+  const { success, error: toastError } = useToast();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [error, setError] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const router = useRouter();
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
-    setError("");
     setIsLoading(true);
 
     try {
@@ -26,13 +26,14 @@ export default function LoginPage() {
       });
 
       if (authError) {
-        setError(authError.message);
+        toastError(authError.message);
         return;
       }
 
+      success("Signed in successfully");
       router.push("/dashboard");
     } catch {
-      setError("An unexpected error occurred");
+      toastError("An unexpected error occurred");
     } finally {
       setIsLoading(false);
     }
@@ -57,12 +58,6 @@ export default function LoginPage() {
           onSubmit={handleSubmit}
           className="space-y-4 rounded-lg border border-terminal-border bg-terminal-panel p-6"
         >
-          {error && (
-            <div className="rounded-md border border-terminal-red/30 bg-terminal-red/10 p-3 font-mono text-xs text-terminal-red">
-              {error}
-            </div>
-          )}
-
           <div>
             <label htmlFor="email" className="block font-mono text-xs font-medium text-muted-foreground">
               Email
