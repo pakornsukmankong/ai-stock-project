@@ -183,10 +183,21 @@ class MTFEngine:
         return df[df.index >= cutoff]
 
     def _resample_to_4h(self, df):
-        """Resample 1H DataFrame to 4H candles."""
+        """Resample 1H DataFrame to 4H candles aligned to the US cash session.
+
+        Yahoo 1H bars are tz-naive UTC. A plain resample("4h") buckets on
+        midnight UTC, so the synthetic 4H candles straddle the session and don't
+        match what a trader sees on a 4H chart. We anchor buckets to ~09:30 ET
+        (13:30 UTC) so they align with the regular session open.
+
+        Note: this ignores DST (ET open is 13:30 UTC in summer, 14:30 in winter),
+        which is an acceptable approximation for coarse trend classification.
+        """
         import pandas as pd
 
-        resampled = df.resample("4h").agg({
+        resampled = df.resample(
+            "4h", origin="start_day", offset=pd.Timedelta(hours=13, minutes=30)
+        ).agg({
             "open": "first",
             "high": "max",
             "low": "min",

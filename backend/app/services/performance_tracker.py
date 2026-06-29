@@ -1,7 +1,10 @@
+import pandas as pd
 from datetime import datetime, timezone, timedelta
 from typing import Optional
 from app.core.database import get_supabase_client
 from app.services.market_data import MarketDataService
+
+BENCHMARK_SYMBOL = "SPY"
 
 
 class PerformanceTracker:
@@ -39,6 +42,17 @@ class PerformanceTracker:
                 return
 
             now = datetime.now(timezone.utc)
+
+            # Fetch the benchmark once so success can be measured as alpha vs SPY
+            # (beating the market) rather than just an absolute positive return.
+            spy_df = await self.market_data.fetch_ohlcv(
+                BENCHMARK_SYMBOL, interval="1d", period="3mo"
+            )
+            spy_now = (
+                float(spy_df["close"].iloc[-1])
+                if spy_df is not None and not spy_df.empty
+                else None
+            )
 
             # Get unique symbols and fetch current prices
             symbols = list({row["stock_symbol"] for row in response.data})
@@ -80,7 +94,9 @@ class PerformanceTracker:
                     return_pct = ((current_price - alert_price) / alert_price) * 100
                     update_data["price_after_7d"] = current_price
                     update_data["return_7d"] = round(return_pct, 2)
-                    update_data["is_successful"] = return_pct > 0
+                    update_data["is_successful"] = self._beat_benchmark(
+                        return_pct, sent_at, spy_df, spy_now
+                    )
 
                 if update_data:
                     self.supabase.table("alerts").update(update_data).eq(
@@ -100,5 +116,39 @@ class PerformanceTracker:
             if df is None or df.empty:
                 return None
             return float(df["close"].iloc[-1])
+        except Exception:
+            return None
+
+    def _beat_benchmark(
+        self,
+        stock_return_pct: float,
+        sent_at: datetime,
+        spy_df: Optional[pd.DataFrame],
+        spy_now: Optional[float],
+    ) -> bool:
+        """Success = the alert beat SPY over the same window (positive alpha).
+
+        Falls back to an absolute positive return when benchmark data is missing.
+        """
+        if spy_df is None or spy_now is None:
+            return stock_return_pct > 0
+
+        spy_at_alert = self._close_on_or_before(spy_df, sent_at)
+        if not spy_at_alert:
+            return stock_return_pct > 0
+
+        spy_return_pct = ((spy_now - spy_at_alert) / spy_at_alert) * 100
+        return stock_return_pct > spy_return_pct
+
+    def _close_on_or_before(self, df: pd.DataFrame, dt: datetime) -> Optional[float]:
+        """Latest close at or before `dt` (nearest prior trading day)."""
+        try:
+            ts = pd.Timestamp(dt)
+            if ts.tzinfo is not None:
+                ts = ts.tz_convert("UTC").tz_localize(None)
+            sub = df.loc[df.index <= ts]
+            if sub.empty:
+                return None
+            return float(sub["close"].iloc[-1])
         except Exception:
             return None
