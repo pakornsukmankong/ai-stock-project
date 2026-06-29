@@ -4,6 +4,11 @@ import ta
 from typing import Optional
 from dataclasses import dataclass, field
 
+# Divergence detection params
+DIVERGENCE_LOOKBACK = 40   # bars to scan for swing lows
+PIVOT_LEFT = 3             # bars lower on the left of a pivot low
+PIVOT_RIGHT = 3            # bars lower on the right of a pivot low
+
 
 @dataclass
 class CandlestickPattern:
@@ -89,6 +94,17 @@ class IndicatorResult:
     # Market Structure - Pivot Points
     pivot_levels: PivotLevels = field(default_factory=PivotLevels)
 
+    # --- Reversal transition signals (evaluated on CLOSED bars) ---
+    # The engine runs intraday, so iloc[-1] is a forming candle. These flags are
+    # computed on the last *closed* bar to avoid signals that flicker as the live
+    # candle updates. They capture a *change* (a turn), not just a current state.
+    macd_bullish_cross: bool = False      # histogram crossed from <=0 to >0
+    macd_turning_up: bool = False         # histogram still <0 but rising 2 bars
+    stoch_bullish_cross: bool = False     # %K crossed above %D
+    rsi_bullish_divergence: bool = False  # price lower-low, RSI higher-low
+    macd_bullish_divergence: bool = False # price lower-low, MACD higher-low
+    macd_histogram_norm: float = 0.0      # histogram as % of price (scale-free)
+
     # Legacy fields for signal engine compatibility
     support_level: float = 0.0
     resistance_level: float = 0.0
@@ -131,6 +147,9 @@ class IndicatorEngine:
             # C. Price Action & Market Structure
             self._detect_candlestick_patterns(df, result)
             self._calculate_pivot_points(df, result)
+
+            # D. Reversal transitions (crosses + divergence)
+            self._detect_reversal_signals(df, result)
 
             # Legacy support/resistance for signal engine
             result.support_level = result.pivot_levels.s1
@@ -251,19 +270,25 @@ class IndicatorEngine:
             result.bb_position = "middle"
 
     def _detect_candlestick_patterns(self, df: pd.DataFrame, result: IndicatorResult) -> None:
-        """Detect major candlestick patterns (manual implementation)."""
+        """Detect major candlestick patterns on the latest CLOSED candle.
+
+        The engine runs intraday, so iloc[-1] is still forming and its
+        high/low/close keep changing — a pattern read off it would flicker and
+        appear/vanish within a day. We evaluate the last closed candle (iloc[-2])
+        against the prior closed candle (iloc[-3]) instead.
+        """
         if len(df) < 3:
             return
 
-        o = df["open"].iloc[-1]
-        h = df["high"].iloc[-1]
-        l = df["low"].iloc[-1]
-        c = df["close"].iloc[-1]
+        o = df["open"].iloc[-2]
+        h = df["high"].iloc[-2]
+        l = df["low"].iloc[-2]
+        c = df["close"].iloc[-2]
         body = abs(c - o)
         full_range = h - l
 
-        prev_o = df["open"].iloc[-2]
-        prev_c = df["close"].iloc[-2]
+        prev_o = df["open"].iloc[-3]
+        prev_c = df["close"].iloc[-3]
         prev_body = abs(prev_c - prev_o)
 
         if full_range == 0:
@@ -311,3 +336,83 @@ class IndicatorEngine:
             s1=round(s1, 2),
             s2=round(s2, 2),
         )
+
+    def _detect_reversal_signals(self, df: pd.DataFrame, result: IndicatorResult) -> None:
+        """Detect MACD/Stochastic *crosses* and RSI/MACD bullish *divergence*.
+
+        A reversal is a change, so these compare consecutive CLOSED bars instead
+        of reading a single live value. Transitions are evaluated at iloc[-2]
+        (last closed) vs iloc[-3] (prior closed).
+        """
+        if len(df) < 5:
+            return
+
+        close = df["close"]
+
+        # Recompute the series we need (cheap for a single symbol).
+        macd_ind = ta.trend.MACD(close=close, window_slow=26, window_fast=12, window_sign=9)
+        hist = macd_ind.macd_diff()
+        macd_line = macd_ind.macd()
+        rsi_series = ta.momentum.RSIIndicator(close=close, window=14).rsi()
+        stoch = ta.momentum.StochasticOscillator(
+            high=df["high"], low=df["low"], close=close, window=14, smooth_window=3
+        )
+        k = stoch.stoch()
+        d = stoch.stoch_signal()
+
+        # --- MACD histogram cross / turn (on closed bars) ---
+        h_cur, h_prev, h_prev2 = hist.iloc[-2], hist.iloc[-3], hist.iloc[-4]
+        if pd.notna(h_cur) and pd.notna(h_prev):
+            # Bullish cross: histogram flipped from <=0 to >0
+            result.macd_bullish_cross = bool(h_prev <= 0 < h_cur)
+            # Turning up: still below zero but rising for two consecutive bars
+            # (monotonic increase is scale-free — no absolute threshold needed)
+            if pd.notna(h_prev2):
+                result.macd_turning_up = bool(h_cur < 0 and h_cur > h_prev > h_prev2)
+        # Normalized histogram (% of price) — scale-free strength across tickers
+        price = result.current_price or float(close.iloc[-1])
+        if price and pd.notna(h_cur):
+            result.macd_histogram_norm = float(h_cur) / price * 100
+
+        # --- Stochastic %K/%D cross (on closed bars) ---
+        k_cur, k_prev = k.iloc[-2], k.iloc[-3]
+        d_cur, d_prev = d.iloc[-2], d.iloc[-3]
+        if all(pd.notna(x) for x in (k_cur, k_prev, d_cur, d_prev)):
+            result.stoch_bullish_cross = bool(k_prev <= d_prev and k_cur > d_cur)
+
+        # --- Bullish divergence: price lower-low, indicator higher-low ---
+        result.rsi_bullish_divergence = self._bullish_divergence(close, rsi_series)
+        result.macd_bullish_divergence = self._bullish_divergence(close, macd_line)
+
+    def _bullish_divergence(self, price: pd.Series, indicator: pd.Series) -> bool:
+        """True when the two most recent pivot lows show price falling while the
+        indicator rises (classic bullish divergence)."""
+        n = DIVERGENCE_LOOKBACK + PIVOT_RIGHT + 1
+        seg_price = price.iloc[-n:] if len(price) >= n else price
+        seg_ind = indicator.iloc[-n:] if len(indicator) >= n else indicator
+
+        lows = self._pivot_lows(seg_price)
+        if len(lows) < 2:
+            return False
+
+        i1, i2 = lows[-2], lows[-1]
+        p1, p2 = seg_price.iloc[i1], seg_price.iloc[i2]
+        v1, v2 = seg_ind.iloc[i1], seg_ind.iloc[i2]
+        if any(pd.isna(x) for x in (p1, p2, v1, v2)):
+            return False
+
+        return bool(p2 < p1 and v2 > v1)
+
+    def _pivot_lows(self, series: pd.Series) -> list[int]:
+        """Return integer positions of confirmed pivot lows (a bar that is the
+        minimum of its [-LEFT, +RIGHT] window and below both neighbours)."""
+        vals = series.values
+        n = len(vals)
+        pivots: list[int] = []
+        for i in range(PIVOT_LEFT, n - PIVOT_RIGHT):
+            if np.isnan(vals[i]):
+                continue
+            window = vals[i - PIVOT_LEFT : i + PIVOT_RIGHT + 1]
+            if vals[i] == np.nanmin(window) and vals[i] < vals[i - 1] and vals[i] < vals[i + 1]:
+                pivots.append(i)
+        return pivots
