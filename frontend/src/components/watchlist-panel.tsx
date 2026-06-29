@@ -3,12 +3,13 @@
 import { useEffect, useState, useRef } from "react";
 import { watchlistApi, searchApi, type WatchlistStock, type StockSearchResult } from "@/lib/api";
 import { Plus, Trash2, ToggleLeft, ToggleRight, Search } from "lucide-react";
+import { useToast } from "@/components/toast";
 
 export function WatchlistPanel() {
+  const { success, error: toastError } = useToast();
   const [stocks, setStocks] = useState<WatchlistStock[]>([]);
   const [newSymbol, setNewSymbol] = useState("");
   const [isLoading, setIsLoading] = useState(true);
-  const [error, setError] = useState("");
   const [searchResults, setSearchResults] = useState<StockSearchResult[]>([]);
   const [isSearching, setIsSearching] = useState(false);
   const [showDropdown, setShowDropdown] = useState(false);
@@ -35,7 +36,7 @@ export function WatchlistPanel() {
       const response = await watchlistApi.getStocks();
       setStocks(response.stocks);
     } catch {
-      setError("Failed to load watchlist");
+      toastError("Failed to load watchlist");
     } finally {
       setIsLoading(false);
     }
@@ -43,7 +44,6 @@ export function WatchlistPanel() {
 
   function handleInputChange(value: string) {
     setNewSymbol(value);
-    setError("");
 
     // Debounce search
     if (searchTimeout.current) {
@@ -81,7 +81,6 @@ export function WatchlistPanel() {
     const symbol = symbolOverride || newSymbol.trim().toUpperCase();
     if (!symbol) return;
 
-    setError("");
     setShowDropdown(false);
 
     try {
@@ -89,10 +88,9 @@ export function WatchlistPanel() {
       setNewSymbol("");
       setSearchResults([]);
       await loadStocks();
+      success(`${symbol} added to watchlist`);
     } catch (err) {
-      if (err instanceof Error) {
-        setError(err.message);
-      }
+      toastError(err instanceof Error ? err.message : `Failed to add ${symbol}`);
     }
   }
 
@@ -100,8 +98,9 @@ export function WatchlistPanel() {
     try {
       await watchlistApi.removeStock(symbol);
       await loadStocks();
+      success(`${symbol} removed from watchlist`);
     } catch {
-      setError("Failed to remove stock");
+      toastError(`Failed to remove ${symbol}`);
     }
   }
 
@@ -109,8 +108,9 @@ export function WatchlistPanel() {
     try {
       await watchlistApi.toggleStock(symbol, !isEnabled);
       await loadStocks();
+      success(`${symbol} tracking ${!isEnabled ? "enabled" : "paused"}`);
     } catch {
-      setError("Failed to toggle stock");
+      toastError(`Failed to update ${symbol}`);
     }
   }
 
@@ -182,12 +182,6 @@ export function WatchlistPanel() {
             Add
           </button>
         </form>
-
-        {error && (
-          <div className="mt-2 font-mono text-xs text-terminal-red">
-            {error}
-          </div>
-        )}
       </div>
 
       {/* Stock List */}

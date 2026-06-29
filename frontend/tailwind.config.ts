@@ -62,9 +62,14 @@ const config: Config = {
           "0%, 100%": { opacity: "1" },
           "50%": { opacity: "0.5" },
         },
+        "toast-in": {
+          "0%": { opacity: "0", transform: "translateX(100%)" },
+          "100%": { opacity: "1", transform: "translateX(0)" },
+        },
       },
       animation: {
         "pulse-green": "pulse-green 2s ease-in-out infinite",
+        "toast-in": "toast-in 0.2s ease-out",
       },
     },
   },

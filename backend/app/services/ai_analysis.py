@@ -280,6 +280,7 @@ Respond ONLY with the JSON object, no other text."""
             self.supabase.table("analysis_cache").upsert(
                 {
                     "symbol": result.symbol,
+                    "action": result.action,
                     "ai_summary": result.summary,
                     "confidence": result.confidence,
                     "reasons": result.reasons,

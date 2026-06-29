@@ -4,8 +4,10 @@ import { useEffect, useState } from "react";
 import { alertsApi, type Alert } from "@/lib/api";
 import { formatDate } from "@/lib/utils";
 import { Bell, ArrowUpRight } from "lucide-react";
+import { useToast } from "@/components/toast";
 
 export function AlertsPanel() {
+  const { error: toastError } = useToast();
   const [alerts, setAlerts] = useState<Alert[]>([]);
   const [isLoading, setIsLoading] = useState(true);
 
@@ -15,14 +17,14 @@ export function AlertsPanel() {
         const response = await alertsApi.getRecent();
         setAlerts(response.alerts);
       } catch {
-        // Silently handle error
+        toastError("Failed to load recent alerts");
       } finally {
         setIsLoading(false);
       }
     }
 
     loadAlerts();
-  }, []);
+  }, [toastError]);
 
   if (isLoading) {
     return (

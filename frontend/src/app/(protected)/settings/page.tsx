@@ -5,13 +5,14 @@ import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 import { userApi, type UserProfile } from "@/lib/api";
 import { Activity, MessageCircle, User, Bell } from "lucide-react";
+import { useToast } from "@/components/toast";
 
 export default function SettingsPage() {
+  const { success, error: toastError } = useToast();
   const [profile, setProfile] = useState<UserProfile | null>(null);
   const [lineUserId, setLineUserId] = useState("");
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
-  const [message, setMessage] = useState("");
   const router = useRouter();
 
   useEffect(() => {
@@ -43,13 +44,13 @@ export default function SettingsPage() {
     if (!lineUserId.trim()) return;
 
     setIsSaving(true);
-    setMessage("");
 
     try {
       await userApi.connectLine(lineUserId.trim());
-      setMessage("LINE account connected successfully");
+      setProfile((prev) => (prev ? { ...prev, line_user_id: lineUserId.trim() } : prev));
+      success("LINE account connected successfully");
     } catch {
-      setMessage("Failed to connect LINE account");
+      toastError("Failed to connect LINE account");
     } finally {
       setIsSaving(false);
     }
@@ -60,9 +61,10 @@ export default function SettingsPage() {
     try {
       await userApi.disconnectLine();
       setLineUserId("");
-      setMessage("LINE account disconnected");
+      setProfile((prev) => (prev ? { ...prev, line_user_id: null } : prev));
+      success("LINE account disconnected");
     } catch {
-      setMessage("Failed to disconnect LINE account");
+      toastError("Failed to disconnect LINE account");
     } finally {
       setIsSaving(false);
     }
@@ -95,12 +97,6 @@ export default function SettingsPage() {
             Connect your LINE account to receive buy signal notifications.
             You need your LINE User ID from the LINE Official Account.
           </p>
-
-          {message && (
-            <div className="mb-4 rounded-md border border-terminal-green/30 bg-terminal-green/5 p-3 font-mono text-xs text-terminal-green">
-              {message}
-            </div>
-          )}
 
           <form onSubmit={handleConnectLine} className="space-y-4">
             <div>
@@ -159,9 +155,9 @@ export default function SettingsPage() {
                   try {
                     await userApi.updateNotificationPreference(option);
                     setProfile((prev) => prev ? { ...prev, min_confidence: option } : prev);
-                    setMessage(`Notification preference set to: ${option}`);
+                    success(`Notification preference set to: ${option}`);
                   } catch {
-                    setMessage("Failed to update preference");
+                    toastError("Failed to update preference");
                   }
                 }}
                 className={`rounded-md px-4 py-2 font-mono text-xs font-medium transition-all ${

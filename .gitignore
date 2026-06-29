@@ -1,6 +1,8 @@
 # Kiro / AI rules
 .kiro/
 AI_RULES.md
+.claude/
+CLAUDE.md
 
 # Environment variables (SENSITIVE)
 .env
@@ -25,6 +27,7 @@ out/
 dist/
 build/
 *.egg-info/
+*.tsbuildinfo
 
 # IDE
 .vscode/

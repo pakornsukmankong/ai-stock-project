@@ -78,21 +78,41 @@ class MTFEngine:
         self.market_data = MarketDataService()
         self.indicator_engine = IndicatorEngine()
 
-    async def analyze(self, symbol: str) -> MTFResult:
+    async def analyze(
+        self,
+        symbol: str,
+        daily_df=None,
+        daily_indicators: Optional[IndicatorResult] = None,
+    ) -> MTFResult:
         """Run multi-timeframe analysis for a symbol.
 
         Args:
             symbol: Stock ticker symbol
+            daily_df: Pre-fetched daily OHLCV (currently unused, reserved)
+            daily_indicators: Pre-computed daily indicators from the caller.
+                When provided, the daily timeframe is reused instead of being
+                re-fetched and re-calculated.
 
         Returns:
             MTFResult with timeframe analyses and confluence scoring
         """
         result = MTFResult()
 
-        # Fetch and analyze each timeframe
-        result.daily = await self._analyze_timeframe(symbol, "1d")
-        result.four_hour = await self._analyze_timeframe(symbol, "4h")
-        result.one_hour = await self._analyze_timeframe(symbol, "1h")
+        # Daily timeframe — reuse the caller's already-computed indicators when
+        # available to avoid a redundant fetch + 200-bar recalculation.
+        if daily_indicators is not None:
+            result.daily = self._build_from_indicators("1d", daily_indicators)
+        else:
+            result.daily = await self._analyze_timeframe(symbol, "1d")
+
+        # Fetch hourly data ONCE (60d) and derive both 4H and 1H from it,
+        # rather than fetching overlapping 1H ranges twice.
+        hourly_df = await self.market_data.fetch_ohlcv(
+            symbol=symbol, interval="1h", period="60d"
+        )
+        if hourly_df is not None and not hourly_df.empty:
+            result.four_hour = self._analyze_df("4h", self._resample_to_4h(hourly_df))
+            result.one_hour = self._analyze_df("1h", self._slice_recent(hourly_df, days=30))
 
         # Calculate confluence
         self._calculate_confluence(result)
@@ -100,30 +120,34 @@ class MTFEngine:
         return result
 
     async def _analyze_timeframe(self, symbol: str, timeframe: str) -> TimeframeAnalysis:
-        """Analyze a single timeframe."""
-        analysis = TimeframeAnalysis(timeframe=timeframe)
+        """Fetch a single timeframe and analyze it."""
         config = TIMEFRAME_CONFIG[timeframe]
-
         try:
-            # Fetch data
             df = await self.market_data.fetch_ohlcv(
                 symbol=symbol,
                 interval=config["interval"],
                 period=config["period"],
             )
+            # For 4H: resample 1H data to 4H candles
+            if df is not None and not df.empty and timeframe == "4h":
+                df = self._resample_to_4h(df)
+            return self._analyze_df(timeframe, df)
+        except Exception as e:
+            print(f"MTF error for {symbol} [{timeframe}]: {e}")
+            return TimeframeAnalysis(timeframe=timeframe)
 
+    def _analyze_df(self, timeframe: str, df) -> TimeframeAnalysis:
+        """Analyze an OHLCV DataFrame already at the target timeframe."""
+        analysis = TimeframeAnalysis(timeframe=timeframe)
+        config = TIMEFRAME_CONFIG[timeframe]
+
+        try:
             if df is None or df.empty:
                 return analysis
 
-            # For 4H: resample 1H data to 4H candles
-            if timeframe == "4h":
-                df = self._resample_to_4h(df)
-
-            # Check minimum data requirement
-            if len(df) < config["min_bars"]:
-                # Relax requirement for intraday (minimum 50 bars)
-                if len(df) < 50:
-                    return analysis
+            # Check minimum data requirement (relax to 50 bars for intraday)
+            if len(df) < config["min_bars"] and len(df) < 50:
+                return analysis
 
             # Calculate indicators
             indicators = self.indicator_engine.calculate(df)
@@ -134,18 +158,29 @@ class MTFEngine:
                 if indicators is None:
                     return analysis
 
-            analysis.indicators = indicators
-            analysis.is_valid = True
-
-            # Classify trend direction
-            analysis.trend_direction = self._classify_trend(indicators)
-            analysis.momentum_state = self._classify_momentum(indicators)
-            analysis.macd_state = self._classify_macd(indicators)
+            analysis = self._build_from_indicators(timeframe, indicators)
 
         except Exception as e:
-            print(f"MTF error for {symbol} [{timeframe}]: {e}")
+            print(f"MTF error [{timeframe}]: {e}")
 
         return analysis
+
+    def _build_from_indicators(self, timeframe: str, indicators: IndicatorResult) -> TimeframeAnalysis:
+        """Build a TimeframeAnalysis from already-computed indicators."""
+        analysis = TimeframeAnalysis(timeframe=timeframe)
+        analysis.indicators = indicators
+        analysis.is_valid = True
+        analysis.trend_direction = self._classify_trend(indicators)
+        analysis.momentum_state = self._classify_momentum(indicators)
+        analysis.macd_state = self._classify_macd(indicators)
+        return analysis
+
+    def _slice_recent(self, df, days: int):
+        """Return rows within the last `days` of the DataFrame's time index."""
+        import pandas as pd
+
+        cutoff = df.index.max() - pd.Timedelta(days=days)
+        return df[df.index >= cutoff]
 
     def _resample_to_4h(self, df):
         """Resample 1H DataFrame to 4H candles."""
