@@ -30,6 +30,10 @@ class AnalysisScheduler:
         self.mtf_engine = MTFEngine()
         self.ai_service = AIAnalysisService()
         self.line_service = LineNotificationService()
+        # Per-symbol signal state from the previous cycle, used for edge-trigger
+        # detection (symbol -> was the buy signal active last cycle). In-memory:
+        # resets on restart, where the cooldown bounds any re-alert burst.
+        self._signal_active: dict[str, bool] = {}
 
     @property
     def supabase(self):
@@ -52,6 +56,13 @@ class AnalysisScheduler:
                 print("No active symbols to analyze.")
                 monitor.log_scheduler_success()
                 return
+
+            # Forget edge-trigger state for symbols no longer watched (so a
+            # re-added symbol gets a fresh edge).
+            active_set = set(symbols)
+            self._signal_active = {
+                s: v for s, v in self._signal_active.items() if s in active_set
+            }
 
             # Collect buy signals per user across the whole cycle so each user
             # receives ONE digest message instead of one push per signal.
@@ -110,8 +121,21 @@ class AnalysisScheduler:
             # Step 4: Run signal engine with MTF adjustment
             signal = self.signal_engine.evaluate_with_mtf(indicators, mtf_result)
 
-            # Step 5: If NO buy signal, stop here (no AI call)
-            if not signal.is_buy_signal:
+            # Step 5: Edge-trigger gate. Only continue when the signal NEWLY turns
+            # active (was inactive last cycle). A setup that stays >= threshold for
+            # hours/days should alert once, not every cycle. Updating state here
+            # (not on earlier early-returns) leaves it unchanged when data is
+            # missing, so a fetch hiccup doesn't fabricate a fresh edge.
+            settings = get_settings()
+            was_active = self._signal_active.get(symbol, False)
+            now_active = signal.is_buy_signal
+            self._signal_active[symbol] = now_active
+
+            if not now_active:
+                return  # no buy signal — stop (no AI call)
+            if settings.alert_edge_trigger and was_active:
+                # Still active from a previous cycle — not a new event.
+                print(f"  {symbol}: signal still active (no new edge) — skipping")
                 return
 
             # Determine which score to display
@@ -350,9 +374,12 @@ class AnalysisScheduler:
                     )
 
     async def _has_recent_alert(self, user_id: str, symbol: str) -> bool:
-        """Check if user already received an alert for this stock within 1 hour."""
+        """Check if the user was already alerted for this stock within the
+        cooldown window (ALERT_COOLDOWN_HOURS). Prevents the same persistent
+        setup from re-firing every cycle."""
         try:
-            cutoff = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
+            cooldown_hours = get_settings().alert_cooldown_hours
+            cutoff = (datetime.now(timezone.utc) - timedelta(hours=cooldown_hours)).isoformat()
 
             response = (
                 self.supabase.table("alerts")
