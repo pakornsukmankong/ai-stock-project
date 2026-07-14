@@ -65,3 +65,7 @@ credentials/
 
 # Supabase local
 supabase/.temp/
+
+# Agent skills (installed via skills / mdskills CLI)
+.agents/
+skills-lock.json
