@@ -1,3 +1,4 @@
 # Tooling used by CI / local development only (kept out of the runtime image).
 -r requirements.txt
 pytest==8.3.4
+pytest-asyncio==0.24.0
