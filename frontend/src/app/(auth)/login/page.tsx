@@ -1,11 +1,12 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 import { Activity } from "lucide-react";
 import { useToast } from "@/components/toast";
+import { GoogleSignInButton } from "@/components/google-sign-in-button";
 
 export default function LoginPage() {
   const { success, error: toastError } = useToast();
@@ -13,6 +14,15 @@ export default function LoginPage() {
   const [password, setPassword] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const router = useRouter();
+
+  // Surface a failed OAuth round-trip (the callback route redirects here with
+  // ?error=oauth) without pulling in useSearchParams / a Suspense boundary.
+  useEffect(() => {
+    if (new URLSearchParams(window.location.search).get("error") === "oauth") {
+      toastError("Google sign-in failed. Please try again.");
+      window.history.replaceState({}, "", "/login");
+    }
+  }, [toastError]);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -54,14 +64,22 @@ export default function LoginPage() {
           </p>
         </div>
 
-        <form
-          onSubmit={handleSubmit}
-          className="space-y-4 rounded-lg border border-terminal-border bg-terminal-panel p-6"
-        >
-          <div>
-            <label htmlFor="email" className="block font-mono text-xs font-medium text-muted-foreground">
-              Email
-            </label>
+        <div className="space-y-4 rounded-lg border border-terminal-border bg-terminal-panel p-6">
+          <GoogleSignInButton label="Sign in with Google" />
+
+          <div className="flex items-center gap-3">
+            <div className="h-px flex-1 bg-terminal-border" />
+            <span className="font-mono text-[10px] uppercase text-muted-foreground">
+              or
+            </span>
+            <div className="h-px flex-1 bg-terminal-border" />
+          </div>
+
+          <form onSubmit={handleSubmit} className="space-y-4">
+            <div>
+              <label htmlFor="email" className="block font-mono text-xs font-medium text-muted-foreground">
+                Email
+              </label>
             <input
               id="email"
               type="email"
@@ -95,7 +113,8 @@ export default function LoginPage() {
           >
             {isLoading ? "Connecting..." : "Sign In"}
           </button>
-        </form>
+          </form>
+        </div>
 
         <p className="text-center font-mono text-xs text-muted-foreground">
           Don&apos;t have an account?{" "}
