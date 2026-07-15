@@ -9,11 +9,32 @@ const jetbrainsMono = JetBrains_Mono({
   variable: "--font-mono",
 });
 
+const siteUrl =
+  process.env.NEXT_PUBLIC_SITE_URL ?? "https://ai-stock-project-five.vercel.app";
+const title = "AI Stock Alert";
+const description =
+  "Rule-based technical analysis + AI buy signals, pushed to your LINE.";
+
 export const metadata: Metadata = {
-  title: "AI Stock Alert",
-  description: "AI-assisted stock alert platform with LINE notifications",
+  // Resolves relative URLs (incl. the generated opengraph-image) to absolute
+  // ones, which social crawlers require.
+  metadataBase: new URL(siteUrl),
+  title,
+  description,
   icons: {
     icon: "/icon.svg",
+  },
+  openGraph: {
+    type: "website",
+    url: siteUrl,
+    siteName: title,
+    title,
+    description,
+  },
+  twitter: {
+    card: "summary_large_image",
+    title,
+    description,
   },
 };
 
