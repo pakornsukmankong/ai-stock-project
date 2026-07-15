@@ -3,7 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from contextlib import asynccontextmanager
 
-from app.api import user, watchlist, alerts, analysis, market, search
+from app.api import user, watchlist, alerts, analysis, market, search, line_webhook
 from app.services.scheduler import get_analysis_scheduler
 from app.services.daily_briefing import DailyBriefingService
 from app.services.performance_tracker import PerformanceTracker
@@ -139,6 +139,12 @@ async def rate_limit_middleware(request: Request, call_next):
     if request.url.path in ("/", "/health", "/docs", "/redoc", "/openapi.json"):
         return await call_next(request)
 
+    # The LINE webhook is authenticated by request signature and called by LINE's
+    # servers (a small set of source IPs). IP-based throttling would drop
+    # legitimate event bursts, so it is exempt — the signature check is the gate.
+    if request.url.path == "/api/v1/webhook/line":
+        return await call_next(request)
+
     # Preflight requests carry no credentials and must not be throttled, or the
     # browser reports a CORS failure instead of a 429.
     if request.method == "OPTIONS":
@@ -163,6 +169,7 @@ app.include_router(alerts.router, prefix="/api/v1")
 app.include_router(analysis.router, prefix="/api/v1")
 app.include_router(market.router, prefix="/api/v1")
 app.include_router(search.router, prefix="/api/v1")
+app.include_router(line_webhook.router, prefix="/api/v1")
 
 
 @app.get("/")

@@ -25,6 +25,7 @@ class LineNotificationService:
     """
 
     PUSH_URL = "https://api.line.me/v2/bot/message/push"
+    REPLY_URL = "https://api.line.me/v2/bot/message/reply"
     QUOTA_URL = "https://api.line.me/v2/bot/message/quota"
     QUOTA_CONSUMPTION_URL = "https://api.line.me/v2/bot/message/quota/consumption"
 
@@ -100,6 +101,36 @@ class LineNotificationService:
                 await asyncio.sleep(self.RETRY_WAIT_SECONDS)
 
         return status
+
+    async def reply_text(self, reply_token: str, message: str) -> bool:
+        """Reply to an inbound webhook event using its reply token.
+
+        Replies are free (they don't count against the monthly push quota) and
+        are the natural way to acknowledge an account-linking message. LINE's
+        "Verify" button and already-consumed tokens yield a non-200; we treat any
+        failure as best-effort and never raise.
+        """
+        if not reply_token:
+            return False
+
+        payload = {
+            "replyToken": reply_token,
+            "messages": [{"type": "text", "text": message}],
+        }
+        try:
+            client = get_http_client()
+            response = await client.post(
+                self.REPLY_URL,
+                json=payload,
+                headers=self._headers(),
+                timeout=10.0,
+            )
+            if response.status_code != 200:
+                print(f"[LINE] Reply failed {response.status_code}: {response.text[:200]}")
+            return response.status_code == 200
+        except Exception as e:
+            print(f"[LINE] Reply error: {e}")
+            return False
 
     async def send_buy_alert(
         self,

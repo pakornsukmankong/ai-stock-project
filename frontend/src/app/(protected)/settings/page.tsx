@@ -1,11 +1,25 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 import { userApi, type UserProfile } from "@/lib/api";
-import { Activity, MessageCircle, User, Bell } from "lucide-react";
+import {
+  Activity,
+  MessageCircle,
+  User,
+  Bell,
+  ExternalLink,
+  Copy,
+  Check,
+  Loader2,
+} from "lucide-react";
 import { useToast } from "@/components/toast";
+
+// Add-friend link for the LINE Official Account that sends alerts. Differs per
+// deployment, so it is configured via env rather than hardcoded. Example:
+// https://lin.ee/xxxxxxx  or  https://line.me/R/ti/p/@your-basic-id
+const LINE_OA_ADD_URL = process.env.NEXT_PUBLIC_LINE_OA_ADD_URL;
 
 export default function SettingsPage() {
   const { success, error: toastError } = useToast();
@@ -13,7 +27,13 @@ export default function SettingsPage() {
   const [lineUserId, setLineUserId] = useState("");
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
+  const [linkCode, setLinkCode] = useState<string | null>(null);
+  const [isGenerating, setIsGenerating] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const [showManual, setShowManual] = useState(false);
   const router = useRouter();
+
+  const isLineConnected = Boolean(profile?.line_user_id);
 
   useEffect(() => {
     async function loadProfile() {
@@ -61,6 +81,7 @@ export default function SettingsPage() {
     try {
       await userApi.disconnectLine();
       setLineUserId("");
+      setLinkCode(null);
       setProfile((prev) => (prev ? { ...prev, line_user_id: null } : prev));
       success("LINE account disconnected");
     } catch {
@@ -69,6 +90,52 @@ export default function SettingsPage() {
       setIsSaving(false);
     }
   }
+
+  async function handleGenerateCode() {
+    setIsGenerating(true);
+    try {
+      const res = await userApi.generateLineLinkCode();
+      setLinkCode(res.code);
+    } catch {
+      toastError("Failed to generate linking code");
+    } finally {
+      setIsGenerating(false);
+    }
+  }
+
+  const handleCopyCode = useCallback(() => {
+    if (!linkCode) return;
+    navigator.clipboard?.writeText(linkCode);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  }, [linkCode]);
+
+  // While a linking code is outstanding, poll the profile so the UI flips to
+  // "connected" the moment the webhook redeems the code — no manual refresh.
+  useEffect(() => {
+    if (!linkCode || isLineConnected) return;
+
+    const poll = setInterval(async () => {
+      try {
+        const res = await userApi.getProfile();
+        if (res.user.line_user_id) {
+          setProfile(res.user);
+          setLinkCode(null);
+          success("LINE account linked successfully");
+        }
+      } catch {
+        // transient — keep polling
+      }
+    }, 4000);
+
+    // Codes expire server-side (~10 min); stop polling a bit after that.
+    const stop = setTimeout(() => clearInterval(poll), 11 * 60 * 1000);
+
+    return () => {
+      clearInterval(poll);
+      clearTimeout(stop);
+    };
+  }, [linkCode, isLineConnected, success]);
 
   if (isLoading) {
     return (
@@ -95,45 +162,159 @@ export default function SettingsPage() {
 
           <p className="mb-4 font-mono text-xs text-muted-foreground">
             Connect your LINE account to receive buy signal notifications.
-            You need your LINE User ID from the LINE Official Account.
+            Push messages only reach you if you have added our LINE Official
+            Account as a friend first.
           </p>
 
-          <form onSubmit={handleConnectLine} className="space-y-4">
-            <div>
-              <label htmlFor="lineUserId" className="block font-mono text-xs font-medium text-muted-foreground">
-                LINE User ID
-              </label>
-              <input
-                id="lineUserId"
-                type="text"
-                value={lineUserId}
-                onChange={(e) => setLineUserId(e.target.value)}
-                placeholder="U1234567890abcdef..."
-                className="mt-1 block w-full rounded-md border border-terminal-border bg-terminal-dark px-3 py-2 font-mono text-xs text-foreground placeholder:text-muted-foreground focus:border-terminal-green/50 focus:outline-none focus:ring-1 focus:ring-terminal-green/50"
-              />
-            </div>
-
-            <div className="flex gap-2">
-              <button
-                type="submit"
-                disabled={isSaving || !lineUserId.trim()}
-                className="rounded-md bg-terminal-green px-4 py-2 font-mono text-xs font-medium text-black transition-all hover:bg-terminal-green-glow disabled:opacity-50"
+          {/* Step 1 — add the OA as a friend (required for push to work) */}
+          <div className="mb-4 rounded-md border border-terminal-border/60 bg-terminal-dark/40 p-4">
+            <p className="mb-3 font-mono text-xs font-medium text-foreground">
+              <span className="text-terminal-green">Step 1.</span> Add our LINE
+              Official Account
+            </p>
+            {LINE_OA_ADD_URL ? (
+              <a
+                href={LINE_OA_ADD_URL}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-2 rounded-md bg-terminal-green px-4 py-2 font-mono text-xs font-medium text-black transition-all hover:bg-terminal-green-glow"
               >
-                {isSaving ? "Saving..." : "Connect LINE"}
-              </button>
+                <MessageCircle className="h-4 w-4" />
+                Add LINE Official Account
+                <ExternalLink className="h-3 w-3" />
+              </a>
+            ) : (
+              <p className="font-mono text-[11px] text-terminal-red">
+                LINE OA link is not configured. Set NEXT_PUBLIC_LINE_OA_ADD_URL.
+              </p>
+            )}
+            <p className="mt-3 font-mono text-[10px] leading-relaxed text-muted-foreground">
+              Adding the account as a friend is required — LINE blocks push
+              messages to anyone who has not. Then link your account below.
+            </p>
+          </div>
 
-              {profile?.line_user_id && (
+          {/* Step 2 — link the account */}
+          {isLineConnected ? (
+            <div className="rounded-md border border-terminal-green/40 bg-terminal-green/5 p-4">
+              <div className="flex items-center justify-between gap-3">
+                <div className="flex items-center gap-2">
+                  <Check className="h-4 w-4 text-terminal-green" />
+                  <span className="font-mono text-xs font-medium text-terminal-green">
+                    LINE account linked
+                  </span>
+                </div>
                 <button
                   type="button"
                   onClick={handleDisconnectLine}
                   disabled={isSaving}
-                  className="rounded-md border border-terminal-border px-4 py-2 font-mono text-xs font-medium text-muted-foreground transition-all hover:border-terminal-red/50 hover:text-terminal-red disabled:opacity-50"
+                  className="rounded-md border border-terminal-border px-3 py-1.5 font-mono text-xs font-medium text-muted-foreground transition-all hover:border-terminal-red/50 hover:text-terminal-red disabled:opacity-50"
                 >
                   Disconnect
                 </button>
-              )}
+              </div>
             </div>
-          </form>
+          ) : (
+            <div className="rounded-md border border-terminal-border/60 bg-terminal-dark/40 p-4">
+              <p className="mb-3 font-mono text-xs font-medium text-foreground">
+                <span className="text-terminal-green">Step 2.</span> Link your
+                account
+              </p>
+
+              {linkCode ? (
+                <div className="space-y-3">
+                  <p className="font-mono text-[11px] leading-relaxed text-muted-foreground">
+                    Send this code as a chat message to the Official Account:
+                  </p>
+                  <div className="flex items-center gap-2">
+                    <code className="flex-1 rounded-md border border-terminal-green/40 bg-terminal-dark px-4 py-3 text-center font-mono text-lg font-bold tracking-[0.3em] text-terminal-green">
+                      {linkCode}
+                    </code>
+                    <button
+                      type="button"
+                      onClick={handleCopyCode}
+                      title="Copy code"
+                      className="rounded-md border border-terminal-border p-3 text-muted-foreground transition-all hover:border-terminal-green/50 hover:text-terminal-green"
+                    >
+                      {copied ? (
+                        <Check className="h-4 w-4 text-terminal-green" />
+                      ) : (
+                        <Copy className="h-4 w-4" />
+                      )}
+                    </button>
+                  </div>
+                  <div className="flex items-center gap-2 font-mono text-[11px] text-muted-foreground">
+                    <Loader2 className="h-3 w-3 animate-spin text-terminal-green" />
+                    Waiting for you to send the code… this updates automatically.
+                  </div>
+                  <p className="font-mono text-[10px] text-muted-foreground">
+                    Code expires in about 10 minutes.{" "}
+                    <button
+                      type="button"
+                      onClick={handleGenerateCode}
+                      disabled={isGenerating}
+                      className="text-terminal-green underline-offset-2 hover:underline disabled:opacity-50"
+                    >
+                      Generate a new one
+                    </button>
+                  </p>
+                </div>
+              ) : (
+                <button
+                  type="button"
+                  onClick={handleGenerateCode}
+                  disabled={isGenerating}
+                  className="inline-flex items-center gap-2 rounded-md bg-terminal-green px-4 py-2 font-mono text-xs font-medium text-black transition-all hover:bg-terminal-green-glow disabled:opacity-50"
+                >
+                  {isGenerating ? (
+                    <>
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                      Generating…
+                    </>
+                  ) : (
+                    "Generate linking code"
+                  )}
+                </button>
+              )}
+
+              {/* Fallback: paste the raw LINE User ID (advanced) */}
+              <div className="mt-4 border-t border-terminal-border/50 pt-3">
+                {showManual ? (
+                  <form onSubmit={handleConnectLine} className="space-y-3">
+                    <label
+                      htmlFor="lineUserId"
+                      className="block font-mono text-[11px] font-medium text-muted-foreground"
+                    >
+                      Enter LINE User ID manually
+                    </label>
+                    <input
+                      id="lineUserId"
+                      type="text"
+                      value={lineUserId}
+                      onChange={(e) => setLineUserId(e.target.value)}
+                      placeholder="U1234567890abcdef..."
+                      className="block w-full rounded-md border border-terminal-border bg-terminal-dark px-3 py-2 font-mono text-xs text-foreground placeholder:text-muted-foreground focus:border-terminal-green/50 focus:outline-none focus:ring-1 focus:ring-terminal-green/50"
+                    />
+                    <button
+                      type="submit"
+                      disabled={isSaving || !lineUserId.trim()}
+                      className="rounded-md border border-terminal-border px-4 py-2 font-mono text-xs font-medium text-muted-foreground transition-all hover:border-terminal-green/50 hover:text-terminal-green disabled:opacity-50"
+                    >
+                      {isSaving ? "Saving…" : "Connect with User ID"}
+                    </button>
+                  </form>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => setShowManual(true)}
+                    className="font-mono text-[10px] text-muted-foreground underline-offset-2 hover:text-terminal-green hover:underline"
+                  >
+                    Advanced: enter LINE User ID manually
+                  </button>
+                )}
+              </div>
+            </div>
+          )}
         </section>
 
         {/* Notification Preferences */}
