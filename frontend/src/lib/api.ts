@@ -114,6 +114,11 @@ export const userApi = {
       body: { line_user_id: lineUserId },
     }),
 
+  generateLineLinkCode: () =>
+    apiRequest<{ code: string; expires_at: string }>("/user/line/link-code", {
+      method: "POST",
+    }),
+
   disconnectLine: () =>
     apiRequest("/user/disconnect-line", {
       method: "DELETE",

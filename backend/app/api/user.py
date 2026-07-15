@@ -5,6 +5,7 @@ from app.core.database import get_supabase_client, db
 from app.core.auth import get_current_user_id
 from app.core.error_monitor import monitor
 from app.schemas.user import ConnectLineRequest, UpdateNotificationPreferenceRequest
+from app.services.line_linking import create_link_code
 
 router = APIRouter(prefix="/user", tags=["user"])
 
@@ -54,6 +55,22 @@ async def connect_line(request: ConnectLineRequest, user_id: str = Depends(get_c
     except Exception as e:
         monitor.log_error("user.connect_line", str(e))
         raise HTTPException(status_code=500, detail="Failed to connect LINE account")
+
+
+@router.post("/line/link-code")
+async def create_line_link_code(user_id: str = Depends(get_current_user_id)):
+    """Generate a short-lived code the user sends to the LINE OA to auto-link.
+
+    Preferred over pasting a raw LINE User ID (which end users can't easily
+    find). The webhook redeems the code and stores the user's line_user_id.
+    """
+    try:
+        supabase = get_supabase_client()
+        await _ensure_user_exists(supabase, user_id)
+        return await create_link_code(user_id)
+    except Exception as e:
+        monitor.log_error("user.line_link_code", str(e))
+        raise HTTPException(status_code=500, detail="Failed to create linking code")
 
 
 @router.delete("/disconnect-line")

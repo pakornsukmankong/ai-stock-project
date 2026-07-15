@@ -18,6 +18,9 @@ class Settings(BaseSettings):
     # LINE Messaging API
     line_channel_access_token: str = ""
     line_channel_secret: str = ""
+    # Lifetime of an account-linking code (Settings → "Generate linking code").
+    # Short so a leaked/screenshotted code is useless minutes later.
+    line_link_code_ttl_minutes: int = 10
 
     # Market Data
     market_data_api_key: str = ""
