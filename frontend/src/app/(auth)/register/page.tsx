@@ -6,6 +6,7 @@ import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 import { Activity } from "lucide-react";
 import { useToast } from "@/components/toast";
+import { GoogleSignInButton } from "@/components/google-sign-in-button";
 
 export default function RegisterPage() {
   const { success, error: toastError } = useToast();
@@ -66,14 +67,22 @@ export default function RegisterPage() {
           </p>
         </div>
 
-        <form
-          onSubmit={handleSubmit}
-          className="space-y-4 rounded-lg border border-terminal-border bg-terminal-panel p-6"
-        >
-          <div>
-            <label htmlFor="email" className="block font-mono text-xs font-medium text-muted-foreground">
-              Email
-            </label>
+        <div className="space-y-4 rounded-lg border border-terminal-border bg-terminal-panel p-6">
+          <GoogleSignInButton label="Sign up with Google" />
+
+          <div className="flex items-center gap-3">
+            <div className="h-px flex-1 bg-terminal-border" />
+            <span className="font-mono text-[10px] uppercase text-muted-foreground">
+              or
+            </span>
+            <div className="h-px flex-1 bg-terminal-border" />
+          </div>
+
+          <form onSubmit={handleSubmit} className="space-y-4">
+            <div>
+              <label htmlFor="email" className="block font-mono text-xs font-medium text-muted-foreground">
+                Email
+              </label>
             <input
               id="email"
               type="email"
@@ -122,7 +131,8 @@ export default function RegisterPage() {
           >
             {isLoading ? "Creating account..." : "Create Account"}
           </button>
-        </form>
+          </form>
+        </div>
 
         <p className="text-center font-mono text-xs text-muted-foreground">
           Already have an account?{" "}
