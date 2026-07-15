@@ -13,6 +13,7 @@ import {
   Copy,
   Check,
   Loader2,
+  RefreshCw,
 } from "lucide-react";
 import { useToast } from "@/components/toast";
 
@@ -100,6 +101,24 @@ export default function SettingsPage() {
       toastError("Failed to generate linking code");
     } finally {
       setIsGenerating(false);
+    }
+  }
+
+  // One-tap re-link: drop the current LINE ID and immediately mint a fresh code,
+  // landing straight in the "send this code" state (codes are single-use, so a
+  // new one is always required).
+  async function handleReconnect() {
+    setIsSaving(true);
+    try {
+      await userApi.disconnectLine();
+      setLineUserId("");
+      setProfile((prev) => (prev ? { ...prev, line_user_id: null } : prev));
+      const res = await userApi.generateLineLinkCode();
+      setLinkCode(res.code);
+    } catch {
+      toastError("Failed to start reconnect");
+    } finally {
+      setIsSaving(false);
     }
   }
 
@@ -204,14 +223,30 @@ export default function SettingsPage() {
                     LINE account linked
                   </span>
                 </div>
-                <button
-                  type="button"
-                  onClick={handleDisconnectLine}
-                  disabled={isSaving}
-                  className="rounded-md border border-terminal-border px-3 py-1.5 font-mono text-xs font-medium text-muted-foreground transition-all hover:border-terminal-red/50 hover:text-terminal-red disabled:opacity-50"
-                >
-                  Disconnect
-                </button>
+                <div className="flex gap-2">
+                  <button
+                    type="button"
+                    onClick={handleReconnect}
+                    disabled={isSaving}
+                    title="Disconnect and generate a new linking code"
+                    className="inline-flex items-center gap-1.5 rounded-md border border-terminal-border px-3 py-1.5 font-mono text-xs font-medium text-muted-foreground transition-all hover:border-terminal-green/50 hover:text-terminal-green disabled:opacity-50"
+                  >
+                    {isSaving ? (
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    ) : (
+                      <RefreshCw className="h-3.5 w-3.5" />
+                    )}
+                    Reconnect
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleDisconnectLine}
+                    disabled={isSaving}
+                    className="rounded-md border border-terminal-border px-3 py-1.5 font-mono text-xs font-medium text-muted-foreground transition-all hover:border-terminal-red/50 hover:text-terminal-red disabled:opacity-50"
+                  >
+                    Disconnect
+                  </button>
+                </div>
               </div>
             </div>
           ) : (
