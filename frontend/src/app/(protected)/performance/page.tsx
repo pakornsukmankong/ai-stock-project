@@ -63,7 +63,7 @@ export default function PerformancePage() {
 
   if (!stats) {
     return (
-      <main className="p-6">
+      <main className="p-4 sm:p-6">
         <p className="font-mono text-xs text-muted-foreground">Failed to load performance data.</p>
       </main>
     );
@@ -99,10 +99,10 @@ export default function PerformancePage() {
   };
 
   return (
-    <main className="p-6">
+    <main className="p-4 sm:p-6">
       <div className="mx-auto max-w-4xl">
         {/* Header */}
-        <div className="mb-6 flex items-center justify-between">
+        <div className="mb-6 flex flex-wrap items-center justify-between gap-3">
           <div className="flex items-center gap-3">
             <Target className="h-5 w-5 text-terminal-green" />
             <h1 className="font-mono text-lg font-bold text-foreground">Performance Tracking</h1>
@@ -144,7 +144,7 @@ export default function PerformancePage() {
         </div>
 
         {/* Stats Cards */}
-        <div className="mb-6 grid grid-cols-4 gap-4">
+        <div className="mb-6 grid grid-cols-2 gap-3 sm:grid-cols-4 sm:gap-4">
           <StatCard label="Total Alerts" value={String(stats.total_alerts)} />
           <StatCard label="Tracked" value={String(stats.tracked)} />
           <StatCard
@@ -168,21 +168,23 @@ export default function PerformancePage() {
             </p>
           </div>
         ) : (
-          <div className="rounded-lg border border-terminal-border bg-terminal-panel">
-            {/* Table Header */}
-            <div className="grid grid-cols-12 gap-2 border-b border-terminal-border px-4 py-3 font-mono text-[10px] text-muted-foreground">
-              <div className="col-span-2">Symbol</div>
-              <div className="col-span-2">Alert Price</div>
-              <div className="col-span-2">1D Return</div>
-              <div className="col-span-2">3D Return</div>
-              <div className="col-span-2">7D Return</div>
-              <div className="col-span-2">Date</div>
-            </div>
+          <div className="overflow-x-auto rounded-lg border border-terminal-border bg-terminal-panel">
+            <div className="min-w-[560px]">
+              {/* Table Header */}
+              <div className="grid grid-cols-12 gap-2 border-b border-terminal-border px-4 py-3 font-mono text-[10px] text-muted-foreground">
+                <div className="col-span-2">Symbol</div>
+                <div className="col-span-2">Alert Price</div>
+                <div className="col-span-2">1D Return</div>
+                <div className="col-span-2">3D Return</div>
+                <div className="col-span-2">7D Return</div>
+                <div className="col-span-2">Date</div>
+              </div>
 
-            {/* Rows */}
-            {stats.alerts.map((alert, i) => (
-              <PerformanceRow key={i} alert={alert} />
-            ))}
+              {/* Rows */}
+              {stats.alerts.map((alert, i) => (
+                <PerformanceRow key={i} alert={alert} />
+              ))}
+            </div>
           </div>
         )}
 

@@ -199,7 +199,7 @@ export function StockChart({ symbol }: StockChartProps) {
           )}
         </div>
 
-        <div className="flex items-center gap-3">
+        <div className="flex flex-wrap items-center gap-2 sm:gap-3">
           {/* Chart Type Selector */}
           <div className="flex rounded-md border border-terminal-border">
             {(["candle", "line", "area"] as ChartType[]).map((type) => (

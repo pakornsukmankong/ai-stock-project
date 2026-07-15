@@ -168,12 +168,12 @@ export default function SettingsPage() {
   }
 
   return (
-    <main className="p-6">
+    <main className="p-4 sm:p-6">
       <div className="mx-auto max-w-2xl">
         <h1 className="mb-6 font-mono text-lg font-bold text-foreground">Settings</h1>
 
         {/* LINE Connection */}
-        <section className="rounded-lg border border-terminal-border bg-terminal-panel p-6">
+        <section className="rounded-lg border border-terminal-border bg-terminal-panel p-4 sm:p-6">
           <div className="mb-4 flex items-center gap-2">
             <MessageCircle className="h-4 w-4 text-terminal-green" />
             <h2 className="font-mono text-sm font-semibold">LINE Notification</h2>
@@ -353,7 +353,7 @@ export default function SettingsPage() {
         </section>
 
         {/* Notification Preferences */}
-        <section className="mt-4 rounded-lg border border-terminal-border bg-terminal-panel p-6">
+        <section className="mt-4 rounded-lg border border-terminal-border bg-terminal-panel p-4 sm:p-6">
           <div className="mb-4 flex items-center gap-2">
             <Bell className="h-4 w-4 text-terminal-green" />
             <h2 className="font-mono text-sm font-semibold">Notification Preferences</h2>
@@ -363,7 +363,7 @@ export default function SettingsPage() {
             Choose the minimum confidence level for receiving alerts.
           </p>
 
-          <div className="flex gap-2">
+          <div className="flex flex-wrap gap-2">
             {(["All", "Medium", "High"] as const).map((option) => (
               <button
                 key={option}
@@ -395,7 +395,7 @@ export default function SettingsPage() {
         </section>
 
         {/* Account Info */}
-        <section className="mt-4 rounded-lg border border-terminal-border bg-terminal-panel p-6">
+        <section className="mt-4 rounded-lg border border-terminal-border bg-terminal-panel p-4 sm:p-6">
           <div className="mb-4 flex items-center gap-2">
             <User className="h-4 w-4 text-terminal-green" />
             <h2 className="font-mono text-sm font-semibold">Account</h2>
