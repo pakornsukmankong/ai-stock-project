@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import Optional, Literal
 
 
@@ -11,7 +11,9 @@ class UserProfile(BaseModel):
 
 
 class ConnectLineRequest(BaseModel):
-    line_user_id: str
+    # LINE user ids are a 'U' followed by 32 hex chars. Constrained so the value
+    # can't be used to smuggle arbitrary content into the push API payload.
+    line_user_id: str = Field(pattern=r"^U[0-9a-f]{32}$")
 
 
 class UpdateNotificationPreferenceRequest(BaseModel):

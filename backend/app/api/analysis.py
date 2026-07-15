@@ -1,24 +1,40 @@
-from fastapi import APIRouter, HTTPException, Depends
+from fastapi import APIRouter, HTTPException, Depends, Request
 from datetime import datetime, timezone
-from app.services.scheduler import AnalysisScheduler
+from app.services.scheduler import get_analysis_scheduler
 from app.services.mtf_engine import MTFEngine
 from app.services.market_hours import get_market_status
 from app.core.scheduler_instance import scheduler as app_scheduler
 from app.core.error_monitor import monitor
 from app.core.auth import get_current_user_id
+from app.core.rate_limiter import trigger_limiter
+from app.core.validation import clean_symbol
 
 router = APIRouter(prefix="/analysis", tags=["analysis"])
 
 
 @router.post("/trigger")
-async def trigger_analysis(user_id: str = Depends(get_current_user_id)):
-    """Manually trigger an analysis cycle (requires auth)."""
+async def trigger_analysis(
+    request: Request,
+    user_id: str = Depends(get_current_user_id),
+):
+    """Manually trigger an analysis cycle (requires auth).
+
+    This fans out to every actively-watched symbol and calls OpenAI for each one
+    that passes the signal gate, so it is rate-limited per user (on top of the
+    global IP limit) and serialized against the scheduled cycle.
+    """
+    trigger_limiter.check(request, key=f"trigger:{user_id}")
+
+    analysis_scheduler = get_analysis_scheduler()
+    if analysis_scheduler.is_running:
+        return {"message": "Analysis cycle already in progress"}
+
     try:
-        analysis_scheduler = AnalysisScheduler()
         await analysis_scheduler.run_analysis_cycle()
         return {"message": "Analysis cycle completed"}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        monitor.log_error("analysis.trigger", str(e))
+        raise HTTPException(status_code=500, detail="Analysis cycle failed")
 
 
 @router.get("/status")
@@ -60,9 +76,11 @@ async def get_mtf_analysis(symbol: str, user_id: str = Depends(get_current_user_
     Returns trend/momentum/MACD state for Daily, 4H, and 1H timeframes,
     along with confluence scoring.
     """
+    ticker = clean_symbol(symbol)
+
     try:
         mtf_engine = MTFEngine()
-        result = await mtf_engine.analyze(symbol.upper())
+        result = await mtf_engine.analyze(ticker)
 
         # Build response
         timeframes = {}
@@ -92,7 +110,7 @@ async def get_mtf_analysis(symbol: str, user_id: str = Depends(get_current_user_
                 }
 
         return {
-            "symbol": symbol.upper(),
+            "symbol": ticker,
             "timeframes": timeframes,
             "confluence": {
                 "trend_alignment": result.trend_alignment,
@@ -106,5 +124,8 @@ async def get_mtf_analysis(symbol: str, user_id: str = Depends(get_current_user_
             "analyzed_at": datetime.now(timezone.utc).isoformat(),
         }
 
+    except HTTPException:
+        raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"MTF analysis failed: {str(e)}")
+        monitor.log_error("analysis.mtf", f"{ticker}: {e}")
+        raise HTTPException(status_code=500, detail="MTF analysis failed")

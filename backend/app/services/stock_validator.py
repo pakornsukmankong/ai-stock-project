@@ -1,4 +1,5 @@
-import httpx
+from app.core.http_client import get_http_client
+from app.core.validation import is_valid_symbol
 
 
 async def validate_stock_symbol(symbol: str) -> bool:
@@ -10,17 +11,15 @@ async def validate_stock_symbol(symbol: str) -> bool:
     Returns:
         True if the symbol is valid and has market data
     """
+    if not is_valid_symbol(symbol):
+        return False
+
     try:
-        url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}"
+        url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol.upper()}"
         params = {"interval": "1d", "range": "1d"}
 
-        async with httpx.AsyncClient() as client:
-            response = await client.get(
-                url,
-                params=params,
-                headers={"User-Agent": "Mozilla/5.0"},
-                timeout=5.0,
-            )
+        client = get_http_client()
+        response = await client.get(url, params=params, timeout=5.0)
 
         if response.status_code != 200:
             return False

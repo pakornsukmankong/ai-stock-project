@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 import { watchlistApi, alertsApi, type WatchlistStock } from "@/lib/api";
@@ -45,6 +45,15 @@ export default function DashboardPage() {
 
     init();
   }, [router]);
+
+  // Keeps the chart's symbol tabs in sync when the panel adds/removes a stock.
+  const handleStocksChange = useCallback((stocks: WatchlistStock[]) => {
+    setWatchlistStocks(stocks);
+    setSelectedSymbol((current) => {
+      if (current && stocks.some((s) => s.symbol === current)) return current;
+      return stocks.length > 0 ? stocks[0].symbol : null;
+    });
+  }, []);
 
   if (isLoading) {
     return (
@@ -118,7 +127,10 @@ export default function DashboardPage() {
             <List className="h-4 w-4 text-terminal-green" />
             <h2 className="font-mono text-sm font-semibold">Watchlist</h2>
           </div>
-          <WatchlistPanel />
+          <WatchlistPanel
+            stocks={watchlistStocks}
+            onStocksChange={handleStocksChange}
+          />
         </section>
 
         {/* Alerts */}
