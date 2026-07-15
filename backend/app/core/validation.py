@@ -9,9 +9,9 @@ from fastapi import HTTPException
 SYMBOL_PATTERN = r"^[A-Z0-9][A-Z0-9.\-]{0,9}$"
 _SYMBOL_RE = re.compile(SYMBOL_PATTERN)
 
-# Yahoo Finance only accepts a fixed set of these; whitelist rather than forward
-# whatever the client sends.
-ALLOWED_INTERVALS = frozenset({"1m", "5m", "15m", "30m", "1h", "1d", "1wk", "1mo"})
+# Intervals the API accepts. All are Yahoo-native except "4h", which the market
+# data layer synthesizes by resampling 1h bars (Yahoo has no 4h interval).
+ALLOWED_INTERVALS = frozenset({"1m", "5m", "15m", "30m", "1h", "4h", "1d", "1wk", "1mo"})
 ALLOWED_PERIODS = frozenset({"1d", "5d", "1mo", "3mo", "6mo", "1y", "2y", "5y", "max"})
 
 
