@@ -101,7 +101,7 @@ export default function AlertsHistoryPage() {
   }
 
   return (
-    <main className="p-6">
+    <main className="p-4 sm:p-6">
       <div className="mx-auto max-w-4xl">
         {/* Header */}
         <div className="mb-6 flex items-center gap-3">
@@ -211,8 +211,8 @@ export default function AlertsHistoryPage() {
 function AlertCard({ alert }: { alert: Alert }) {
   return (
     <div className="rounded-lg border border-terminal-border bg-terminal-panel p-4 transition-all hover:border-terminal-green/20">
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-2">
+      <div className="flex flex-wrap items-center justify-between gap-x-2 gap-y-1">
+        <div className="flex flex-wrap items-center gap-2">
           <ArrowUpRight className="h-3.5 w-3.5 text-terminal-green" />
           <span className="font-mono text-sm font-bold text-foreground">
             {alert.stock_symbol}

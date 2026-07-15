@@ -67,9 +67,9 @@ export default function DashboardPage() {
   }
 
   return (
-    <main className="p-6">
+    <main className="p-4 sm:p-6">
       {/* Top Bar */}
-      <div className="mb-6 flex items-center justify-between">
+      <div className="mb-6 flex items-center justify-between gap-3">
         <div>
           <h1 className="font-mono text-lg font-bold text-foreground">Dashboard</h1>
           <p className="font-mono text-xs text-muted-foreground">
@@ -86,7 +86,7 @@ export default function DashboardPage() {
       </div>
 
       {/* Stats Row */}
-      <div className="mb-6 grid grid-cols-3 gap-4">
+      <div className="mb-6 grid grid-cols-3 gap-3 sm:gap-4">
         <StatCard label="Watchlist" value={String(watchlistStocks.length)} suffix="stocks" />
         <StatCard label="Signals Today" value={String(signalsToday)} suffix="alerts" />
         <StatCard label="Next Scan" value="5" suffix="min" />
