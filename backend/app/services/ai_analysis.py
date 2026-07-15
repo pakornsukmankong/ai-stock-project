@@ -3,7 +3,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional
 import json
 from app.core.config import get_settings
-from app.core.database import get_supabase_client
+from app.core.database import get_supabase_client, db
 from app.schemas.stock import StockSignalSummary, AIAnalysisResult
 
 
@@ -86,14 +86,13 @@ Respond ONLY with the JSON object, no other text."""
         """Check if a valid cached analysis exists."""
         try:
             now = datetime.now(timezone.utc).isoformat()
-            response = (
+            response = await db(
                 self.supabase.table("analysis_cache")
                 .select("*")
                 .eq("symbol", symbol)
                 .gte("expires_at", now)
                 .order("cached_at", desc=True)
                 .limit(1)
-                .execute()
             )
 
             if response.data:
@@ -277,18 +276,20 @@ Respond ONLY with the JSON object, no other text."""
             ttl_minutes = self.settings.cache_ttl_minutes
             expires_at = datetime.now(timezone.utc) + timedelta(minutes=ttl_minutes)
 
-            self.supabase.table("analysis_cache").upsert(
-                {
-                    "symbol": result.symbol,
-                    "action": result.action,
-                    "ai_summary": result.summary,
-                    "confidence": result.confidence,
-                    "reasons": result.reasons,
-                    "cached_at": result.analyzed_at.isoformat(),
-                    "expires_at": expires_at.isoformat(),
-                },
-                on_conflict="symbol",
-            ).execute()
+            await db(
+                self.supabase.table("analysis_cache").upsert(
+                    {
+                        "symbol": result.symbol,
+                        "action": result.action,
+                        "ai_summary": result.summary,
+                        "confidence": result.confidence,
+                        "reasons": result.reasons,
+                        "cached_at": result.analyzed_at.isoformat(),
+                        "expires_at": expires_at.isoformat(),
+                    },
+                    on_conflict="symbol",
+                )
+            )
 
         except Exception as e:
             print(f"Error caching analysis for {result.symbol}: {e}")

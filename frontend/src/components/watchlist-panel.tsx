@@ -5,11 +5,23 @@ import { watchlistApi, searchApi, type WatchlistStock, type StockSearchResult } 
 import { Plus, Trash2, ToggleLeft, ToggleRight, Search } from "lucide-react";
 import { useToast } from "@/components/toast";
 
-export function WatchlistPanel() {
+interface WatchlistPanelProps {
+  /**
+   * Stocks already fetched by the parent. When provided, the panel skips its own
+   * initial request (the dashboard was fetching the same list twice) and reports
+   * changes back through onStocksChange so the parent stays in sync.
+   */
+  stocks?: WatchlistStock[];
+  onStocksChange?: (stocks: WatchlistStock[]) => void;
+}
+
+export function WatchlistPanel({ stocks: providedStocks, onStocksChange }: WatchlistPanelProps = {}) {
+  const isControlled = providedStocks !== undefined;
   const { success, error: toastError } = useToast();
-  const [stocks, setStocks] = useState<WatchlistStock[]>([]);
+  const [internalStocks, setInternalStocks] = useState<WatchlistStock[]>([]);
+  const stocks = providedStocks ?? internalStocks;
   const [newSymbol, setNewSymbol] = useState("");
-  const [isLoading, setIsLoading] = useState(true);
+  const [isLoading, setIsLoading] = useState(!isControlled);
   const [searchResults, setSearchResults] = useState<StockSearchResult[]>([]);
   const [isSearching, setIsSearching] = useState(false);
   const [showDropdown, setShowDropdown] = useState(false);
@@ -17,8 +29,9 @@ export function WatchlistPanel() {
   const searchTimeout = useRef<NodeJS.Timeout | null>(null);
 
   useEffect(() => {
-    loadStocks();
-  }, []);
+    if (!isControlled) loadStocks();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isControlled]);
 
   // Close dropdown on outside click
   useEffect(() => {
@@ -34,7 +47,8 @@ export function WatchlistPanel() {
   async function loadStocks() {
     try {
       const response = await watchlistApi.getStocks();
-      setStocks(response.stocks);
+      setInternalStocks(response.stocks);
+      onStocksChange?.(response.stocks);
     } catch {
       toastError("Failed to load watchlist");
     } finally {

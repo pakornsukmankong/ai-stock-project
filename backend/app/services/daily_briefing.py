@@ -1,9 +1,10 @@
 from datetime import datetime, timezone, date
 from typing import Optional
-import httpx
 from openai import AsyncOpenAI
 from app.core.config import get_settings
-from app.core.database import get_supabase_client
+from app.core.database import get_supabase_client, db
+from app.core.http_client import get_http_client
+from app.core.validation import is_valid_symbol
 from app.services.line_notification import LineNotificationService
 
 
@@ -65,13 +66,12 @@ Keep each stock to 2-3 lines max. Be direct and actionable."""
                 hour=0, minute=0, second=0, microsecond=0
             ).isoformat()
 
-            response = (
+            response = await db(
                 self.supabase.table("alerts")
                 .select("id")
                 .eq("signal_type", "DAILY_BRIEFING")
                 .gte("sent_at", today_start)
                 .limit(1)
-                .execute()
             )
 
             return len(response.data) > 0
@@ -82,12 +82,11 @@ Keep each stock to 2-3 lines max. Be direct and actionable."""
     async def _get_users_with_line(self) -> list[dict]:
         """Get all active users with LINE connected."""
         try:
-            response = (
+            response = await db(
                 self.supabase.table("users")
                 .select("id, line_user_id")
                 .not_.is_("line_user_id", "null")
                 .eq("is_active", True)
-                .execute()
             )
             return response.data
 
@@ -98,11 +97,11 @@ Keep each stock to 2-3 lines max. Be direct and actionable."""
     async def _get_user_stocks(self, user_id: str) -> list[str]:
         """Get all enabled stocks for a user."""
         try:
-            response = (
+            response = await db(
                 self.supabase.table("watchlists")
                 .select("id")
                 .eq("user_id", user_id)
-                .execute()
+                .limit(1)
             )
 
             if not response.data:
@@ -110,12 +109,11 @@ Keep each stock to 2-3 lines max. Be direct and actionable."""
 
             watchlist_id = response.data[0]["id"]
 
-            stocks_response = (
+            stocks_response = await db(
                 self.supabase.table("watchlist_stocks")
                 .select("symbol")
                 .eq("watchlist_id", watchlist_id)
                 .eq("is_enabled", True)
-                .execute()
             )
 
             return [row["symbol"] for row in stocks_response.data]
@@ -149,22 +147,27 @@ Keep each stock to 2-3 lines max. Be direct and actionable."""
 
         if is_sent:
             try:
-                self.supabase.table("alerts").insert({
-                    "user_id": user_id,
-                    "stock_symbol": ",".join(symbols[:5]),
-                    "signal_type": "DAILY_BRIEFING",
-                    "ai_summary": briefing[:500],
-                    "confidence": "—",
-                    "reasons": symbols,
-                    "sent_at": datetime.now(timezone.utc).isoformat(),
-                }).execute()
+                await db(
+                    self.supabase.table("alerts").insert({
+                        "user_id": user_id,
+                        "stock_symbol": ",".join(symbols[:5]),
+                        "signal_type": "DAILY_BRIEFING",
+                        "ai_summary": briefing[:500],
+                        "confidence": "—",
+                        "reasons": symbols,
+                        "sent_at": datetime.now(timezone.utc).isoformat(),
+                    })
+                )
             except Exception:
                 pass
 
     async def _fetch_stock_news(self, symbol: str) -> list[str]:
         """Fetch recent news headlines for a stock from Yahoo Finance."""
+        if not is_valid_symbol(symbol):
+            return []
+
         try:
-            url = f"https://query1.finance.yahoo.com/v1/finance/search"
+            url = "https://query1.finance.yahoo.com/v1/finance/search"
             params = {
                 "q": symbol,
                 "quotesCount": 0,
@@ -172,14 +175,9 @@ Keep each stock to 2-3 lines max. Be direct and actionable."""
                 "listsCount": 0,
             }
 
-            async with httpx.AsyncClient() as client:
-                response = await client.get(
-                    url,
-                    params=params,
-                    headers={"User-Agent": "Mozilla/5.0"},
-                    timeout=10.0,
-                )
-                response.raise_for_status()
+            client = get_http_client()
+            response = await client.get(url, params=params, timeout=10.0)
+            response.raise_for_status()
 
             data = response.json()
             news_items = data.get("news", [])

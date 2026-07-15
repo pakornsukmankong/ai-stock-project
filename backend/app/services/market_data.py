@@ -1,7 +1,9 @@
-import httpx
 import pandas as pd
 from typing import Optional
+
 from app.core.config import get_settings
+from app.core.http_client import get_http_client
+from app.core.validation import is_valid_symbol
 
 
 class MarketDataService:
@@ -27,21 +29,22 @@ class MarketDataService:
         Returns:
             DataFrame with columns: open, high, low, close, volume
         """
+        # The symbol lands in the request path, so it is validated here as well as
+        # at the API boundary — this is also reachable from the scheduler and DB.
+        if not is_valid_symbol(symbol):
+            print(f"Refusing to fetch market data for invalid symbol: {symbol!r}")
+            return None
+
         try:
-            url = f"{self.base_url}/{symbol}"
+            url = f"{self.base_url}/{symbol.upper()}"
             params = {
                 "interval": interval,
                 "range": period,
             }
 
-            async with httpx.AsyncClient() as client:
-                response = await client.get(
-                    url,
-                    params=params,
-                    headers={"User-Agent": "Mozilla/5.0"},
-                    timeout=10.0,
-                )
-                response.raise_for_status()
+            client = get_http_client()
+            response = await client.get(url, params=params, timeout=10.0)
+            response.raise_for_status()
 
             data = response.json()
             result = data["chart"]["result"][0]

@@ -1,16 +1,17 @@
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from contextlib import asynccontextmanager
 
 from app.api import user, watchlist, alerts, analysis, market, search
-from app.services.scheduler import AnalysisScheduler
+from app.services.scheduler import get_analysis_scheduler
 from app.services.daily_briefing import DailyBriefingService
 from app.services.performance_tracker import PerformanceTracker
 from app.services.cleanup import cleanup_old_alerts
 from app.core.config import get_settings
+from app.core.http_client import close_http_client
 from app.core.scheduler_instance import scheduler
-from app.core.rate_limiter import api_limiter
+from app.core.rate_limiter import api_limiter, trigger_limiter
 from app.core.error_monitor import monitor
 
 
@@ -22,13 +23,16 @@ async def lifespan(app: FastAPI):
     # Only start scheduler if Supabase is configured
     if settings.supabase_url and settings.supabase_service_role_key:
         try:
-            analysis_scheduler = AnalysisScheduler()
+            analysis_scheduler = get_analysis_scheduler()
             scheduler.add_job(
                 analysis_scheduler.run_analysis_cycle,
                 "interval",
                 minutes=settings.analysis_interval_minutes,
                 id="stock_analysis",
                 replace_existing=True,
+                # A slow cycle must never stack up behind itself.
+                max_instances=1,
+                coalesce=True,
             )
             scheduler.add_job(
                 cleanup_old_alerts,
@@ -60,7 +64,7 @@ async def lifespan(app: FastAPI):
                 replace_existing=True,
             )
             scheduler.add_job(
-                api_limiter.cleanup,
+                _cleanup_rate_limiters,
                 "interval",
                 minutes=5,
                 id="rate_limiter_cleanup",
@@ -69,7 +73,10 @@ async def lifespan(app: FastAPI):
             scheduler.start()
             monitor.set_scheduler_running(True)
             print(f"Scheduler started: running every {settings.analysis_interval_minutes} minutes")
-            print("Cleanup job: runs every 6 hours (retention: 7 days)")
+            print(
+                f"Cleanup job: runs every 6 hours "
+                f"(retention: {settings.alerts_retention_days} days)"
+            )
             print("Daily briefing: runs at 8:30 AM ET (Mon-Fri)")
         except Exception as e:
             monitor.log_error("startup", f"Scheduler failed to start: {e}")
@@ -85,12 +92,25 @@ async def lifespan(app: FastAPI):
         monitor.set_scheduler_running(False)
         print("Scheduler stopped")
 
+    await close_http_client()
+
+
+def _cleanup_rate_limiters() -> None:
+    api_limiter.cleanup()
+    trigger_limiter.cleanup()
+
+
+settings = get_settings()
 
 app = FastAPI(
     title="AI Stock Alert API",
     description="AI-assisted stock alert platform with LINE notifications",
     version="1.0.0",
     lifespan=lifespan,
+    # Don't publish the full API surface in production.
+    docs_url=None if settings.is_production else "/docs",
+    redoc_url=None if settings.is_production else "/redoc",
+    openapi_url=None if settings.is_production else "/openapi.json",
 )
 
 # CORS middleware
@@ -98,15 +118,16 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=[
         "http://localhost:3000",
-        "https://ai-stock-project-five.vercel.app",
     ],
-    # Match Vercel preview deployments (e.g. https://ai-stock-project-xxx.vercel.app).
+    # Match this project's Vercel deployments (production + previews).
     # CORSMiddleware does exact-string matching on allow_origins, so a literal
-    # "https://*.vercel.app" entry never matches — a regex is required.
-    allow_origin_regex=r"https://.*\.vercel\.app",
+    # "https://*.vercel.app" entry never matches — a regex is required. The regex
+    # must stay narrow: a blanket `https://.*\.vercel\.app` would let ANY site
+    # deployed on Vercel (i.e. anyone) make credentialed calls to this API.
+    allow_origin_regex=settings.cors_allow_origin_regex,
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type"],
 )
 
 
@@ -115,16 +136,21 @@ app.add_middleware(
 async def rate_limit_middleware(request: Request, call_next):
     """Apply rate limiting to all API requests."""
     # Skip rate limiting for health check and docs
-    if request.url.path in ("/", "/health", "/docs", "/openapi.json"):
+    if request.url.path in ("/", "/health", "/docs", "/redoc", "/openapi.json"):
+        return await call_next(request)
+
+    # Preflight requests carry no credentials and must not be throttled, or the
+    # browser reports a CORS failure instead of a 429.
+    if request.method == "OPTIONS":
         return await call_next(request)
 
     try:
         api_limiter.check(request)
-    except Exception as e:
+    except HTTPException as e:
         return JSONResponse(
-            status_code=429,
-            content={"detail": "Too many requests. Please try again later."},
-            headers={"Retry-After": "60"},
+            status_code=e.status_code,
+            content={"detail": e.detail},
+            headers=e.headers or {"Retry-After": "60"},
         )
 
     return await call_next(request)

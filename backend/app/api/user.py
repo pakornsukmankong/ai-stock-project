@@ -1,6 +1,9 @@
 from fastapi import APIRouter, HTTPException, Depends
-from app.core.database import get_supabase_client
+from fastapi.concurrency import run_in_threadpool
+
+from app.core.database import get_supabase_client, db
 from app.core.auth import get_current_user_id
+from app.core.error_monitor import monitor
 from app.schemas.user import ConnectLineRequest, UpdateNotificationPreferenceRequest
 
 router = APIRouter(prefix="/user", tags=["user"])
@@ -12,11 +15,8 @@ async def get_profile(user_id: str = Depends(get_current_user_id)):
     try:
         supabase = get_supabase_client()
 
-        response = (
-            supabase.table("users")
-            .select("*")
-            .eq("id", user_id)
-            .execute()
+        response = await db(
+            supabase.table("users").select("*").eq("id", user_id).limit(1)
         )
 
         if not response.data:
@@ -26,7 +26,8 @@ async def get_profile(user_id: str = Depends(get_current_user_id)):
         return {"user": response.data[0]}
 
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        monitor.log_error("user.profile", str(e))
+        raise HTTPException(status_code=500, detail="Failed to load profile")
 
 
 @router.post("/connect-line")
@@ -37,11 +38,10 @@ async def connect_line(request: ConnectLineRequest, user_id: str = Depends(get_c
 
         await _ensure_user_exists(supabase, user_id)
 
-        response = (
+        response = await db(
             supabase.table("users")
             .update({"line_user_id": request.line_user_id})
             .eq("id", user_id)
-            .execute()
         )
 
         if not response.data:
@@ -52,7 +52,8 @@ async def connect_line(request: ConnectLineRequest, user_id: str = Depends(get_c
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        monitor.log_error("user.connect_line", str(e))
+        raise HTTPException(status_code=500, detail="Failed to connect LINE account")
 
 
 @router.delete("/disconnect-line")
@@ -61,17 +62,17 @@ async def disconnect_line(user_id: str = Depends(get_current_user_id)):
     try:
         supabase = get_supabase_client()
 
-        response = (
+        await db(
             supabase.table("users")
             .update({"line_user_id": None})
             .eq("id", user_id)
-            .execute()
         )
 
         return {"message": "LINE account disconnected"}
 
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        monitor.log_error("user.disconnect_line", str(e))
+        raise HTTPException(status_code=500, detail="Failed to disconnect LINE account")
 
 
 @router.patch("/notification-preference")
@@ -83,11 +84,10 @@ async def update_notification_preference(
     try:
         supabase = get_supabase_client()
 
-        response = (
+        response = await db(
             supabase.table("users")
             .update({"min_confidence": request.min_confidence})
             .eq("id", user_id)
-            .execute()
         )
 
         if not response.data:
@@ -98,35 +98,33 @@ async def update_notification_preference(
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        monitor.log_error("user.notification_preference", str(e))
+        raise HTTPException(status_code=500, detail="Failed to update preference")
 
 
 async def _ensure_user_exists(supabase, user_id: str) -> dict:
     """Ensure user record exists in users table. Create if missing."""
-    response = (
-        supabase.table("users")
-        .select("*")
-        .eq("id", user_id)
-        .execute()
+    response = await db(
+        supabase.table("users").select("*").eq("id", user_id).limit(1)
     )
 
     if response.data:
         return response.data[0]
 
     try:
-        auth_user = supabase.auth.admin.get_user_by_id(user_id)
+        auth_user = await run_in_threadpool(
+            supabase.auth.admin.get_user_by_id, user_id
+        )
         email = auth_user.user.email if auth_user.user else f"{user_id}@unknown"
     except Exception:
         email = f"{user_id}@unknown"
 
-    insert_response = (
-        supabase.table("users")
-        .insert({"id": user_id, "email": email})
-        .execute()
+    insert_response = await db(
+        supabase.table("users").insert({"id": user_id, "email": email})
     )
 
     try:
-        supabase.table("watchlists").insert({"user_id": user_id}).execute()
+        await db(supabase.table("watchlists").insert({"user_id": user_id}))
     except Exception:
         pass
 

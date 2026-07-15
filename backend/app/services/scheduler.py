@@ -1,6 +1,8 @@
+import asyncio
 from datetime import datetime, timezone, timedelta
+from functools import lru_cache
 from app.core.config import get_settings
-from app.core.database import get_supabase_client
+from app.core.database import get_supabase_client, db
 from app.core.error_monitor import monitor
 from app.services.market_data import MarketDataService
 from app.services.market_hours import is_market_open, get_market_status
@@ -34,10 +36,18 @@ class AnalysisScheduler:
         # detection (symbol -> was the buy signal active last cycle). In-memory:
         # resets on restart, where the cooldown bounds any re-alert burst.
         self._signal_active: dict[str, bool] = {}
+        # Guards against two cycles running at once (the interval job overlapping
+        # a slow run, or a manual /analysis/trigger landing mid-cycle).
+        self._cycle_lock = asyncio.Lock()
 
     @property
     def supabase(self):
         return get_supabase_client()
+
+    @property
+    def is_running(self) -> bool:
+        """True while a cycle is in flight."""
+        return self._cycle_lock.locked()
 
     async def run_analysis_cycle(self) -> None:
         """Run one complete analysis cycle for all active stocks."""
@@ -47,11 +57,21 @@ class AnalysisScheduler:
             print(f"[{datetime.now(timezone.utc)}] Market closed ({status['reason']}). Skipping analysis.")
             return
 
+        if self._cycle_lock.locked():
+            print(f"[{datetime.now(timezone.utc)}] Analysis cycle already running. Skipping.")
+            return
+
+        async with self._cycle_lock:
+            await self._run_cycle()
+
+    async def _run_cycle(self) -> None:
         print(f"[{datetime.now(timezone.utc)}] Starting analysis cycle...")
 
         try:
-            # Get unique active stock symbols from all watchlists
-            symbols = await self._get_active_symbols()
+            # One query up-front for the whole watcher graph, instead of one query
+            # per symbol plus one per (user, symbol) pair later in the cycle.
+            watchers = await self._get_watchers()
+            symbols = list(watchers.keys())
             if not symbols:
                 print("No active symbols to analyze.")
                 monitor.log_scheduler_success()
@@ -64,11 +84,26 @@ class AnalysisScheduler:
                 s: v for s, v in self._signal_active.items() if s in active_set
             }
 
+            recently_alerted = await self._get_recently_alerted()
+
             # Collect buy signals per user across the whole cycle so each user
             # receives ONE digest message instead of one push per signal.
             pending: dict[str, dict] = {}
-            for symbol in symbols:
-                await self._analyze_symbol(symbol, pending)
+
+            # Analyze symbols concurrently. Each symbol costs two Yahoo round-trips
+            # plus heavy pandas work, so a serial loop made cycle time scale
+            # linearly with watchlist size. The semaphore keeps us from tripping
+            # Yahoo's rate limiting.
+            concurrency = max(1, get_settings().analysis_concurrency)
+            semaphore = asyncio.Semaphore(concurrency)
+
+            async def analyze(symbol: str) -> None:
+                async with semaphore:
+                    await self._analyze_symbol(
+                        symbol, pending, watchers, recently_alerted
+                    )
+
+            await asyncio.gather(*(analyze(symbol) for symbol in symbols))
 
             await self._dispatch_notifications(pending)
 
@@ -79,22 +114,78 @@ class AnalysisScheduler:
             monitor.log_scheduler_failure(str(e))
             print(f"[{datetime.now(timezone.utc)}] Analysis cycle FAILED: {e}")
 
-    async def _get_active_symbols(self) -> list[str]:
-        """Get all unique stock symbols that are actively being tracked."""
+    async def _get_watchers(self) -> dict[str, list[dict]]:
+        """Map every actively-tracked symbol to the users watching it.
+
+        Replaces the old per-symbol `_collect_users` query (N queries per cycle)
+        with a single fetch of the watchlist graph.
+        """
         try:
-            response = (
+            response = await db(
                 self.supabase.table("watchlist_stocks")
-                .select("symbol")
+                .select("symbol, watchlists(user_id, users(line_user_id, min_confidence))")
                 .eq("is_enabled", True)
-                .execute()
             )
-            symbols = list({row["symbol"] for row in response.data})
-            return symbols
+
+            watchers: dict[str, list[dict]] = {}
+            for row in response.data:
+                symbol = row.get("symbol")
+                if not symbol:
+                    continue
+
+                entry = watchers.setdefault(symbol, [])
+
+                watchlist = row.get("watchlists") or {}
+                user = watchlist.get("users") or {}
+                user_id = watchlist.get("user_id")
+                line_user_id = user.get("line_user_id")
+
+                # Symbols with no LINE-connected watcher still need analyzing (so
+                # alerts land on the dashboard), hence the key is created above.
+                if user_id and line_user_id:
+                    entry.append(
+                        {
+                            "user_id": user_id,
+                            "line_user_id": line_user_id,
+                            "min_confidence": user.get("min_confidence") or "All",
+                        }
+                    )
+
+            return watchers
         except Exception as e:
             print(f"Error fetching active symbols: {e}")
-            return []
+            return {}
 
-    async def _analyze_symbol(self, symbol: str, pending: dict) -> None:
+    async def _get_recently_alerted(self) -> set[tuple[str, str]]:
+        """(user_id, symbol) pairs alerted within the cooldown window.
+
+        Fetched once per cycle instead of one query per (user, symbol) candidate.
+        """
+        try:
+            cooldown_hours = get_settings().alert_cooldown_hours
+            cutoff = (datetime.now(timezone.utc) - timedelta(hours=cooldown_hours)).isoformat()
+
+            response = await db(
+                self.supabase.table("alerts")
+                .select("user_id, stock_symbol")
+                .eq("signal_type", "BUY")
+                .gte("sent_at", cutoff)
+            )
+
+            return {(row["user_id"], row["stock_symbol"]) for row in response.data}
+        except Exception as e:
+            print(f"Error fetching recent alerts: {e}")
+            # Fail closed: an empty set would let every signal through and
+            # re-alert users who are still inside their cooldown window.
+            raise
+
+    async def _analyze_symbol(
+        self,
+        symbol: str,
+        pending: dict,
+        watchers: dict[str, list[dict]],
+        recently_alerted: set[tuple[str, str]],
+    ) -> None:
         """Run full analysis pipeline for a single stock symbol with multi-timeframe."""
         try:
             # Step 1: Fetch daily market data (primary timeframe)
@@ -206,7 +297,14 @@ class AnalysisScheduler:
 
             # Step 8: Queue this signal for every user watching the stock
             # (sent as a digest at the end of the cycle).
-            await self._collect_users(symbol, analysis, indicators.current_price, pending)
+            self._collect_users(
+                symbol,
+                analysis,
+                indicators.current_price,
+                pending,
+                watchers.get(symbol, []),
+                recently_alerted,
+            )
 
         except Exception as e:
             print(f"Error analyzing {symbol}: {e}")
@@ -273,52 +371,39 @@ class AnalysisScheduler:
             print(f"Error building daily candles: {e}")
             return []
 
-    async def _collect_users(
+    def _collect_users(
         self,
         symbol: str,
         analysis: "AIAnalysisResult",
         price: float,
         pending: dict,
+        watchers: list[dict],
+        recently_alerted: set[tuple[str, str]],
     ) -> None:
-        """Queue this signal for every eligible user into the per-user digest buckets."""
-        try:
-            # Get users watching this symbol with LINE connected
-            response = (
-                self.supabase.table("watchlist_stocks")
-                .select("watchlist_id, watchlists(user_id, users(line_user_id, min_confidence))")
-                .eq("symbol", symbol)
-                .eq("is_enabled", True)
-                .execute()
+        """Queue this signal for every eligible user into the per-user digest buckets.
+
+        Purely in-memory: the watcher list and the cooldown set are both fetched
+        once per cycle by the caller.
+        """
+        for watcher in watchers:
+            user_id = watcher["user_id"]
+
+            # Skip if the user was already alerted for this stock within the
+            # cooldown window (ALERT_COOLDOWN_HOURS).
+            if (user_id, symbol) in recently_alerted:
+                continue
+
+            if not self._meets_confidence_preference(
+                analysis.confidence, watcher["min_confidence"]
+            ):
+                continue
+
+            bucket = pending.setdefault(
+                user_id, {"line_user_id": watcher["line_user_id"], "items": []}
             )
-
-            for row in response.data:
-                watchlist = row.get("watchlists", {})
-                user = watchlist.get("users", {})
-                line_user_id = user.get("line_user_id")
-
-                if not line_user_id:
-                    continue
-
-                user_id = watchlist.get("user_id")
-
-                # Check duplicate: skip if already alerted recently
-                if await self._has_recent_alert(user_id, symbol):
-                    continue
-
-                # Check notification preference
-                min_confidence = user.get("min_confidence", "All")
-                if not self._meets_confidence_preference(analysis.confidence, min_confidence):
-                    continue
-
-                bucket = pending.setdefault(
-                    user_id, {"line_user_id": line_user_id, "items": []}
-                )
-                bucket["items"].append(
-                    {"symbol": symbol, "analysis": analysis, "price": price}
-                )
-
-        except Exception as e:
-            print(f"Error collecting users for {symbol}: {e}")
+            bucket["items"].append(
+                {"symbol": symbol, "analysis": analysis, "price": price}
+            )
 
     async def _dispatch_notifications(self, pending: dict) -> None:
         """Send one digest per user, with LINE monthly-quota awareness.
@@ -373,29 +458,6 @@ class AnalysisScheduler:
                         user_id, item["symbol"], item["analysis"], item["price"]
                     )
 
-    async def _has_recent_alert(self, user_id: str, symbol: str) -> bool:
-        """Check if the user was already alerted for this stock within the
-        cooldown window (ALERT_COOLDOWN_HOURS). Prevents the same persistent
-        setup from re-firing every cycle."""
-        try:
-            cooldown_hours = get_settings().alert_cooldown_hours
-            cutoff = (datetime.now(timezone.utc) - timedelta(hours=cooldown_hours)).isoformat()
-
-            response = (
-                self.supabase.table("alerts")
-                .select("id")
-                .eq("user_id", user_id)
-                .eq("stock_symbol", symbol)
-                .gte("sent_at", cutoff)
-                .limit(1)
-                .execute()
-            )
-
-            return len(response.data) > 0
-
-        except Exception:
-            return False
-
     def _meets_confidence_preference(self, confidence: str, min_confidence: str) -> bool:
         """Check if alert confidence meets user's minimum preference.
 
@@ -422,17 +484,30 @@ class AnalysisScheduler:
     ) -> None:
         """Save alert to history."""
         try:
-            self.supabase.table("alerts").insert(
-                {
-                    "user_id": user_id,
-                    "stock_symbol": symbol,
-                    "signal_type": "BUY",
-                    "ai_summary": analysis.summary,
-                    "confidence": analysis.confidence,
-                    "reasons": analysis.reasons,
-                    "alert_price": price,
-                    "sent_at": datetime.now(timezone.utc).isoformat(),
-                }
-            ).execute()
+            await db(
+                self.supabase.table("alerts").insert(
+                    {
+                        "user_id": user_id,
+                        "stock_symbol": symbol,
+                        "signal_type": "BUY",
+                        "ai_summary": analysis.summary,
+                        "confidence": analysis.confidence,
+                        "reasons": analysis.reasons,
+                        "alert_price": price,
+                        "sent_at": datetime.now(timezone.utc).isoformat(),
+                    }
+                )
+            )
         except Exception as e:
             print(f"Error saving alert for {user_id}/{symbol}: {e}")
+
+
+@lru_cache()
+def get_analysis_scheduler() -> AnalysisScheduler:
+    """The single scheduler instance shared by the cron job and /analysis/trigger.
+
+    Must be a singleton: the edge-trigger state and the run lock live on the
+    instance, so a per-request `AnalysisScheduler()` would both re-alert
+    already-active signals and run a second cycle concurrently with the job.
+    """
+    return AnalysisScheduler()

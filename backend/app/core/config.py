@@ -7,6 +7,10 @@ class Settings(BaseSettings):
     supabase_url: str = ""
     supabase_key: str = ""
     supabase_service_role_key: str = ""
+    # Symmetric secret used to sign Supabase auth JWTs (Project Settings → API →
+    # JWT Secret). When set, tokens are verified locally instead of round-tripping
+    # to the Supabase Auth server on every request.
+    supabase_jwt_secret: str = ""
 
     # OpenAI
     openai_api_key: str = ""
@@ -30,10 +34,38 @@ class Settings(BaseSettings):
     # (was inactive the previous cycle), not every cycle it stays active. The
     # cooldown above remains a safety net against flapping/restart bursts.
     alert_edge_trigger: bool = True
+    # How long alerts are kept before the cleanup job deletes them.
+    alerts_retention_days: int = 30
+
+    # Analysis pipeline
+    # Symbols analyzed concurrently per cycle. Bounded so a large watchlist does
+    # not hammer Yahoo Finance (which rate-limits aggressively).
+    analysis_concurrency: int = 5
+    # Minimum seconds between manual /analysis/trigger runs *per user*. The
+    # endpoint fans out to every watched symbol and calls OpenAI, so it must not
+    # be callable in a tight loop.
+    trigger_cooldown_seconds: int = 300
+
+    # Chart endpoint cache TTL (seconds). Dashboard tab-switching re-requests the
+    # same candles constantly; without this every switch hits Yahoo.
+    chart_cache_ttl_seconds: int = 300
+
+    # Security
+    # Regex of allowed browser origins. The default matches only this project's
+    # Vercel deployments — NOT all of *.vercel.app, which anyone can deploy to.
+    cors_allow_origin_regex: str = r"https://ai-stock-project[a-z0-9-]*\.vercel\.app"
+    # Number of reverse proxies in front of the app (Railway/Render = 1). The
+    # rate limiter reads the client IP this many hops from the right of
+    # X-Forwarded-For; anything further left is attacker-controlled.
+    trusted_proxy_hops: int = 1
 
     class Config:
         env_file = ".env"
         case_sensitive = False
+
+    @property
+    def is_production(self) -> bool:
+        return self.app_env.lower() in ("production", "prod")
 
 
 @lru_cache()

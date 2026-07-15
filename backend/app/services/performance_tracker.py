@@ -1,7 +1,9 @@
+import asyncio
 import pandas as pd
 from datetime import datetime, timezone, timedelta
 from typing import Optional
-from app.core.database import get_supabase_client
+from app.core.config import get_settings
+from app.core.database import get_supabase_client, db
 from app.services.market_data import MarketDataService
 
 BENCHMARK_SYMBOL = "SPY"
@@ -27,14 +29,13 @@ class PerformanceTracker:
 
         try:
             # Get all BUY alerts with alert_price that still need tracking
-            response = (
+            response = await db(
                 self.supabase.table("alerts")
                 .select("id, stock_symbol, alert_price, sent_at, return_1d, return_3d, return_7d")
                 .eq("signal_type", "BUY")
                 .not_.is_("alert_price", "null")
                 .order("sent_at", desc=True)
                 .limit(100)
-                .execute()
             )
 
             if not response.data:
@@ -54,13 +55,17 @@ class PerformanceTracker:
                 else None
             )
 
-            # Get unique symbols and fetch current prices
+            # Get unique symbols and fetch current prices concurrently (bounded,
+            # so we don't trip Yahoo's rate limiting).
             symbols = list({row["stock_symbol"] for row in response.data})
-            current_prices = {}
-            for symbol in symbols:
-                price = await self._get_current_price(symbol)
-                if price:
-                    current_prices[symbol] = price
+            semaphore = asyncio.Semaphore(max(1, get_settings().analysis_concurrency))
+
+            async def fetch(symbol: str) -> tuple[str, Optional[float]]:
+                async with semaphore:
+                    return symbol, await self._get_current_price(symbol)
+
+            fetched = await asyncio.gather(*(fetch(symbol) for symbol in symbols))
+            current_prices = {symbol: price for symbol, price in fetched if price}
 
             updated_count = 0
 
@@ -99,9 +104,11 @@ class PerformanceTracker:
                     )
 
                 if update_data:
-                    self.supabase.table("alerts").update(update_data).eq(
-                        "id", alert["id"]
-                    ).execute()
+                    await db(
+                        self.supabase.table("alerts")
+                        .update(update_data)
+                        .eq("id", alert["id"])
+                    )
                     updated_count += 1
 
             print(f"[{datetime.now(timezone.utc)}] Performance tracking complete. Updated {updated_count} alerts.")

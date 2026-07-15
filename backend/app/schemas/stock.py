@@ -1,6 +1,8 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 from datetime import datetime
 from typing import Optional
+
+from app.core.validation import is_valid_symbol
 
 
 class StockSignalSummary(BaseModel):
@@ -86,6 +88,19 @@ class AlertResponse(BaseModel):
 class WatchlistStockRequest(BaseModel):
     symbol: str
     is_enabled: bool = True
+
+    @field_validator("symbol")
+    @classmethod
+    def _normalize_symbol(cls, value: str) -> str:
+        """Uppercase and constrain the ticker.
+
+        The symbol is interpolated into the Yahoo Finance request path
+        downstream, so it must not carry path separators or escapes.
+        """
+        candidate = (value or "").strip().upper()
+        if not is_valid_symbol(candidate):
+            raise ValueError("Invalid stock symbol")
+        return candidate
 
 
 class WatchlistStockResponse(BaseModel):

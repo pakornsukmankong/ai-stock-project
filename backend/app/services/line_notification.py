@@ -1,7 +1,7 @@
 import asyncio
-import httpx
 from typing import Optional
 from app.core.config import get_settings
+from app.core.http_client import get_http_client
 from app.schemas.stock import AIAnalysisResult
 
 
@@ -56,27 +56,28 @@ class LineNotificationService:
         (fail-open) rather than silently dropping notifications.
         """
         try:
-            async with httpx.AsyncClient() as client:
-                quota_resp = await client.get(
-                    self.QUOTA_URL, headers=self._headers(), timeout=10.0
-                )
-                quota_resp.raise_for_status()
-                quota = quota_resp.json()
+            client = get_http_client()
 
-                if quota.get("type") != "limited":
-                    # "none" = unlimited plan
-                    return {"type": quota.get("type", "none"), "limit": None, "used": 0, "remaining": None}
+            quota_resp = await client.get(
+                self.QUOTA_URL, headers=self._headers(), timeout=10.0
+            )
+            quota_resp.raise_for_status()
+            quota = quota_resp.json()
 
-                limit = quota.get("value")
+            if quota.get("type") != "limited":
+                # "none" = unlimited plan
+                return {"type": quota.get("type", "none"), "limit": None, "used": 0, "remaining": None}
 
-                cons_resp = await client.get(
-                    self.QUOTA_CONSUMPTION_URL, headers=self._headers(), timeout=10.0
-                )
-                cons_resp.raise_for_status()
-                used = cons_resp.json().get("totalUsage", 0)
+            limit = quota.get("value")
 
-                remaining = max(0, limit - used) if limit is not None else None
-                return {"type": "limited", "limit": limit, "used": used, "remaining": remaining}
+            cons_resp = await client.get(
+                self.QUOTA_CONSUMPTION_URL, headers=self._headers(), timeout=10.0
+            )
+            cons_resp.raise_for_status()
+            used = cons_resp.json().get("totalUsage", 0)
+
+            remaining = max(0, limit - used) if limit is not None else None
+            return {"type": "limited", "limit": limit, "used": used, "remaining": remaining}
 
         except Exception as e:
             print(f"[LINE] Failed to fetch quota: {e}")
@@ -118,13 +119,13 @@ class LineNotificationService:
         }
 
         try:
-            async with httpx.AsyncClient() as client:
-                response = await client.post(
-                    self.PUSH_URL,
-                    json=payload,
-                    headers=self._headers(),
-                    timeout=10.0,
-                )
+            client = get_http_client()
+            response = await client.post(
+                self.PUSH_URL,
+                json=payload,
+                headers=self._headers(),
+                timeout=10.0,
+            )
 
             if response.status_code == 200:
                 return SENT

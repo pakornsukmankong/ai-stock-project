@@ -1,14 +1,22 @@
-from fastapi import APIRouter, HTTPException, Depends
-from app.core.database import get_supabase_client
+from datetime import datetime, timezone
+
+from fastapi import APIRouter, HTTPException, Depends, Query
+
+from app.core.database import get_supabase_client, db
 from app.core.auth import get_current_user_id
+from app.core.error_monitor import monitor
 
 router = APIRouter(prefix="/alerts", tags=["alerts"])
+
+# Cap on how many alerts the win-rate/return aggregate scans. The old code pulled
+# every alert the user had ever received into memory on each page view.
+STATS_SAMPLE_LIMIT = 500
 
 
 @router.get("/")
 async def get_alerts(
-    page: int = 1,
-    per_page: int = 20,
+    page: int = Query(1, ge=1),
+    per_page: int = Query(20, ge=1, le=100),
     user_id: str = Depends(get_current_user_id),
 ):
     """Get paginated alert history for a user.
@@ -19,28 +27,23 @@ async def get_alerts(
     """
     try:
         supabase = get_supabase_client()
-
-        # Clamp per_page
-        per_page = max(1, min(per_page, 100))
         offset = (page - 1) * per_page
 
         # Get total count
-        count_response = (
+        count_response = await db(
             supabase.table("alerts")
             .select("id", count="exact")
             .eq("user_id", user_id)
-            .execute()
         )
         total = count_response.count or 0
 
         # Get paginated data
-        response = (
+        response = await db(
             supabase.table("alerts")
             .select("*")
             .eq("user_id", user_id)
             .order("sent_at", desc=True)
             .range(offset, offset + per_page - 1)
-            .execute()
         )
 
         total_pages = (total + per_page - 1) // per_page if total > 0 else 1
@@ -58,7 +61,8 @@ async def get_alerts(
         }
 
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        monitor.log_error("alerts.list", str(e))
+        raise HTTPException(status_code=500, detail="Failed to load alerts")
 
 
 @router.get("/stats")
@@ -66,70 +70,78 @@ async def get_alert_stats(user_id: str = Depends(get_current_user_id)):
     """Get alert statistics for today."""
     try:
         supabase = get_supabase_client()
-        from datetime import datetime, timezone
 
-        today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0).isoformat()
-
-        response = (
-            supabase.table("alerts")
-            .select("id")
-            .eq("user_id", user_id)
-            .gte("sent_at", today_start)
-            .execute()
+        today_start = (
+            datetime.now(timezone.utc)
+            .replace(hour=0, minute=0, second=0, microsecond=0)
+            .isoformat()
         )
 
-        return {"signals_today": len(response.data)}
+        # count="exact" makes Postgres do the counting; the rows themselves were
+        # only ever used for len().
+        response = await db(
+            supabase.table("alerts")
+            .select("id", count="exact")
+            .eq("user_id", user_id)
+            .gte("sent_at", today_start)
+            .limit(1)
+        )
+
+        return {"signals_today": response.count or 0}
 
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        monitor.log_error("alerts.stats", str(e))
+        raise HTTPException(status_code=500, detail="Failed to load alert stats")
 
 
 @router.get("/performance")
 async def get_performance_stats(
-    page: int = 1,
-    per_page: int = 20,
+    page: int = Query(1, ge=1),
+    per_page: int = Query(20, ge=1, le=100),
     user_id: str = Depends(get_current_user_id),
 ):
     """Get paginated performance statistics for user's alerts."""
     try:
         supabase = get_supabase_client()
-
-        per_page = max(1, min(per_page, 100))
         offset = (page - 1) * per_page
 
         # Get total count of BUY alerts with price
-        count_response = (
+        count_response = await db(
             supabase.table("alerts")
             .select("id", count="exact")
             .eq("user_id", user_id)
             .eq("signal_type", "BUY")
             .not_.is_("alert_price", "null")
-            .execute()
         )
         total = count_response.count or 0
 
         # Get paginated data
-        response = (
+        response = await db(
             supabase.table("alerts")
-            .select("stock_symbol, alert_price, price_after_1d, price_after_3d, price_after_7d, return_1d, return_3d, return_7d, is_successful, sent_at, confidence")
+            .select(
+                "stock_symbol, alert_price, price_after_1d, price_after_3d, "
+                "price_after_7d, return_1d, return_3d, return_7d, is_successful, "
+                "sent_at, confidence"
+            )
             .eq("user_id", user_id)
             .eq("signal_type", "BUY")
             .not_.is_("alert_price", "null")
             .order("sent_at", desc=True)
             .range(offset, offset + per_page - 1)
-            .execute()
         )
 
         alerts_data = response.data
 
-        # Calculate overall stats (from all data, not just current page)
-        all_response = (
+        # Overall stats, computed over the most recent STATS_SAMPLE_LIMIT alerts
+        # rather than the user's entire (unbounded) history.
+        all_response = await db(
             supabase.table("alerts")
             .select("is_successful, return_7d")
             .eq("user_id", user_id)
             .eq("signal_type", "BUY")
             .not_.is_("alert_price", "null")
-            .execute()
+            .order("sent_at", desc=True)
+            .limit(STATS_SAMPLE_LIMIT)
         )
         all_data = all_response.data
 
@@ -162,7 +174,8 @@ async def get_performance_stats(
         }
 
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        monitor.log_error("alerts.performance", str(e))
+        raise HTTPException(status_code=500, detail="Failed to load performance stats")
 
 
 @router.get("/recent")
@@ -171,19 +184,19 @@ async def get_recent_alerts(user_id: str = Depends(get_current_user_id)):
     try:
         supabase = get_supabase_client()
 
-        response = (
+        response = await db(
             supabase.table("alerts")
             .select("*")
             .eq("user_id", user_id)
             .order("sent_at", desc=True)
             .limit(5)
-            .execute()
         )
 
         return {"alerts": response.data}
 
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        monitor.log_error("alerts.recent", str(e))
+        raise HTTPException(status_code=500, detail="Failed to load recent alerts")
 
 
 @router.delete("/performance/clear")
@@ -193,15 +206,16 @@ async def clear_performance_data(user_id: str = Depends(get_current_user_id)):
         supabase = get_supabase_client()
 
         # Delete all BUY alerts that have alert_price (performance tracked ones)
-        supabase.table("alerts").delete().eq(
-            "user_id", user_id
-        ).eq(
-            "signal_type", "BUY"
-        ).not_.is_(
-            "alert_price", "null"
-        ).execute()
+        await db(
+            supabase.table("alerts")
+            .delete()
+            .eq("user_id", user_id)
+            .eq("signal_type", "BUY")
+            .not_.is_("alert_price", "null")
+        )
 
         return {"message": "Performance tracking data cleared successfully"}
 
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        monitor.log_error("alerts.clear_performance", str(e))
+        raise HTTPException(status_code=500, detail="Failed to clear performance data")
