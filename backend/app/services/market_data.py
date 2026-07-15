@@ -23,7 +23,7 @@ class MarketDataService:
 
         Args:
             symbol: Stock ticker symbol (e.g., 'AAPL')
-            interval: Data interval (1m, 5m, 15m, 1h, 1d)
+            interval: Data interval (1m, 5m, 15m, 1h, 4h, 1d)
             period: Data period (1d, 5d, 1mo, 3mo, 6mo, 1y)
 
         Returns:
@@ -35,6 +35,23 @@ class MarketDataService:
             print(f"Refusing to fetch market data for invalid symbol: {symbol!r}")
             return None
 
+        # Yahoo Finance has no native 4h interval — synthesize it by resampling
+        # 1h bars, the same way the MTF engine does for its 4h timeframe.
+        if interval == "4h":
+            hourly = await self._fetch_raw(symbol, "1h", period)
+            if hourly is None or hourly.empty:
+                return None
+            return self._resample_to_4h(hourly)
+
+        return await self._fetch_raw(symbol, interval, period)
+
+    async def _fetch_raw(
+        self,
+        symbol: str,
+        interval: str,
+        period: str,
+    ) -> Optional[pd.DataFrame]:
+        """Fetch a Yahoo-native interval directly (no resampling)."""
         try:
             url = f"{self.base_url}/{symbol.upper()}"
             params = {
@@ -74,3 +91,27 @@ class MarketDataService:
         except Exception as e:
             print(f"Error fetching market data for {symbol}: {e}")
             return None
+
+    def _resample_to_4h(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Resample 1H bars to 4H candles anchored to the US cash session.
+
+        Yahoo 1H bars are tz-naive UTC; a plain resample buckets on midnight UTC
+        and straddles the session. Anchoring buckets to ~09:30 ET (13:30 UTC)
+        lines them up with what a trader sees on a 4H chart. DST is ignored
+        (an acceptable approximation for charting). Mirrors MTFEngine's resampler.
+        """
+        return (
+            df.resample(
+                "4h", origin="start_day", offset=pd.Timedelta(hours=13, minutes=30)
+            )
+            .agg(
+                {
+                    "open": "first",
+                    "high": "max",
+                    "low": "min",
+                    "close": "last",
+                    "volume": "sum",
+                }
+            )
+            .dropna()
+        )
