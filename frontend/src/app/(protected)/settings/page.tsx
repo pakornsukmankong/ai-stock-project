@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
-import { userApi, type UserProfile } from "@/lib/api";
+import { userApi, analysisApi, type UserProfile } from "@/lib/api";
 import {
   Activity,
   MessageCircle,
@@ -14,6 +14,7 @@ import {
   Check,
   Loader2,
   RefreshCw,
+  Newspaper,
 } from "lucide-react";
 import { useToast } from "@/components/toast";
 
@@ -32,6 +33,7 @@ export default function SettingsPage() {
   const [isGenerating, setIsGenerating] = useState(false);
   const [copied, setCopied] = useState(false);
   const [showManual, setShowManual] = useState(false);
+  const [isSendingBriefing, setIsSendingBriefing] = useState(false);
   const router = useRouter();
 
   const isLineConnected = Boolean(profile?.line_user_id);
@@ -119,6 +121,23 @@ export default function SettingsPage() {
       toastError("Failed to start reconnect");
     } finally {
       setIsSaving(false);
+    }
+  }
+
+  async function handleSendBriefing() {
+    setIsSendingBriefing(true);
+    try {
+      const res = await analysisApi.triggerBriefing();
+      if (res.sent_markets.length > 0) {
+        success(res.detail);
+      } else {
+        toastError(res.detail);
+      }
+    } catch (err) {
+      // Surfaces the server's message, incl. the per-user cooldown on 429.
+      toastError(err instanceof Error ? err.message : "Failed to send briefing");
+    } finally {
+      setIsSendingBriefing(false);
     }
   }
 
@@ -391,6 +410,44 @@ export default function SettingsPage() {
             {profile?.min_confidence === "All" && "You will receive all buy signal alerts."}
             {profile?.min_confidence === "Medium" && "You will receive Medium and High confidence alerts."}
             {profile?.min_confidence === "High" && "You will only receive High confidence alerts."}
+          </p>
+        </section>
+
+        {/* Daily Briefing */}
+        <section className="mt-4 rounded-lg border border-terminal-border bg-terminal-panel p-4 sm:p-6">
+          <div className="mb-4 flex items-center gap-2">
+            <Newspaper className="h-4 w-4 text-terminal-green" />
+            <h2 className="font-mono text-sm font-semibold">Daily Briefing</h2>
+          </div>
+
+          <p className="mb-4 font-mono text-xs text-muted-foreground">
+            A news briefing is sent to your LINE ~1 hour before each market opens
+            (SET 09:00 ICT, US 8:30 ET). Send one now to test it.
+          </p>
+
+          <button
+            type="button"
+            onClick={handleSendBriefing}
+            disabled={isSendingBriefing || !isLineConnected}
+            className="inline-flex items-center gap-2 rounded-md bg-terminal-green px-4 py-2 font-mono text-xs font-medium text-black transition-all hover:bg-terminal-green-glow disabled:opacity-50"
+          >
+            {isSendingBriefing ? (
+              <>
+                <Loader2 className="h-4 w-4 animate-spin" />
+                Sending…
+              </>
+            ) : (
+              <>
+                <Newspaper className="h-4 w-4" />
+                Send briefing now
+              </>
+            )}
+          </button>
+
+          <p className="mt-3 font-mono text-[10px] leading-relaxed text-muted-foreground">
+            {isLineConnected
+              ? "Covers every market you hold stocks in. Limited to one send every few minutes — it calls the AI and uses your LINE message quota."
+              : "Connect your LINE account above to enable this."}
           </p>
         </section>
 

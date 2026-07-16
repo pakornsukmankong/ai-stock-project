@@ -1,6 +1,7 @@
 from fastapi import APIRouter, HTTPException, Depends, Request
 from datetime import datetime, timezone
 from app.services.scheduler import get_analysis_scheduler
+from app.services.daily_briefing import DailyBriefingService
 from app.services.mtf_engine import MTFEngine
 from app.services.market_hours import get_market_status
 from app.core.scheduler_instance import scheduler as app_scheduler
@@ -35,6 +36,25 @@ async def trigger_analysis(
     except Exception as e:
         monitor.log_error("analysis.trigger", str(e))
         raise HTTPException(status_code=500, detail="Analysis cycle failed")
+
+
+@router.post("/briefing/trigger")
+async def trigger_briefing(
+    request: Request,
+    user_id: str = Depends(get_current_user_id),
+):
+    """Send the daily news briefing to the caller's LINE right now (requires auth).
+
+    Only ever targets the requesting user. Costs an OpenAI call plus a LINE push
+    per market held, so it shares the per-user trigger cooldown (own bucket).
+    """
+    trigger_limiter.check(request, key=f"briefing:{user_id}")
+
+    try:
+        return await DailyBriefingService().send_briefing_now(user_id)
+    except Exception as e:
+        monitor.log_error("analysis.trigger_briefing", str(e))
+        raise HTTPException(status_code=500, detail="Failed to send briefing")
 
 
 @router.get("/status")

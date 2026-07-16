@@ -8,7 +8,7 @@ from app.core.http_client import get_http_client
 from app.core.validation import is_valid_symbol
 from app.services.ai_health import build_chat_request
 from app.services.line_notification import LineNotificationService
-from app.services.markets import market_for_symbol, US_MARKET, Market
+from app.services.markets import market_for_symbol, MARKETS, US_MARKET, Market
 
 
 class DailyBriefingService:
@@ -65,10 +65,60 @@ Keep each stock to 2-3 lines max. Be direct and actionable."""
         except Exception as e:
             print(f"Error sending {market.code} daily briefings: {e}")
 
+    async def send_briefing_now(self, user_id: str) -> dict:
+        """Force-send briefings to ONE user, for every market they hold stocks in.
+
+        Manual counterpart to the scheduled run. Deliberately differs from it:
+        - targets a single user (a manual trigger must never push to everyone),
+        - ignores the daily 'already sent' guard (it's an explicit re-send), and
+        - records with a MANUAL-suffixed type, because the scheduled guard is
+          global — writing the normal type here would make the day's scheduled
+          briefing skip for every other user too.
+        """
+        user = await self._get_user_with_line(user_id)
+        if not user:
+            return {"sent_markets": [], "detail": "LINE account not connected."}
+
+        sent_markets = [
+            market.code
+            for market in MARKETS
+            if await self._send_briefing_to_user(user, market, manual=True)
+        ]
+
+        if not sent_markets:
+            return {
+                "sent_markets": [],
+                "detail": "Nothing to send — your watchlist is empty or delivery failed.",
+            }
+        return {
+            "sent_markets": sent_markets,
+            "detail": f"Briefing sent for: {', '.join(sent_markets)}",
+        }
+
+    async def _get_user_with_line(self, user_id: str) -> Optional[dict]:
+        """Fetch one user, or None when they have no LINE account linked."""
+        try:
+            response = await db(
+                self.supabase.table("users")
+                .select("id, line_user_id")
+                .eq("id", user_id)
+                .limit(1)
+            )
+            if not response.data:
+                return None
+            row = response.data[0]
+            return row if row.get("line_user_id") else None
+        except Exception:
+            return None
+
     @staticmethod
-    def _briefing_type(market: Market) -> str:
-        """Per-market signal_type so each market's 'already sent' guard is independent."""
-        return f"DAILY_BRIEFING:{market.code}"
+    def _briefing_type(market: Market, manual: bool = False) -> str:
+        """Per-market signal_type so each market's 'already sent' guard is independent.
+
+        Manual sends get a distinct type so they don't trip the scheduled guard.
+        """
+        suffix = ":MANUAL" if manual else ""
+        return f"DAILY_BRIEFING:{market.code}{suffix}"
 
     async def _already_sent_today(self, market: Market) -> bool:
         """Check if this market's briefing was already sent during its local day."""
@@ -137,7 +187,9 @@ Keep each stock to 2-3 lines max. Be direct and actionable."""
         except Exception:
             return []
 
-    async def _send_briefing_to_user(self, user: dict, market: Market) -> bool:
+    async def _send_briefing_to_user(
+        self, user: dict, market: Market, manual: bool = False
+    ) -> bool:
         """Generate and send this market's briefing to one user. Returns True if sent."""
         user_id = user["id"]
         line_user_id = user["line_user_id"]
@@ -167,7 +219,7 @@ Keep each stock to 2-3 lines max. Be direct and actionable."""
                     self.supabase.table("alerts").insert({
                         "user_id": user_id,
                         "stock_symbol": ",".join(symbols[:5]),
-                        "signal_type": self._briefing_type(market),
+                        "signal_type": self._briefing_type(market, manual),
                         "ai_summary": briefing[:500],
                         "confidence": "—",
                         "reasons": symbols,
