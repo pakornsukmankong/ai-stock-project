@@ -1,4 +1,4 @@
-from datetime import datetime, timezone, date
+from datetime import datetime, timezone
 from typing import Optional
 from openai import AsyncOpenAI
 from app.core.config import get_settings
@@ -6,14 +6,16 @@ from app.core.database import get_supabase_client, db
 from app.core.http_client import get_http_client
 from app.core.validation import is_valid_symbol
 from app.services.line_notification import LineNotificationService
+from app.services.markets import market_for_symbol, US_MARKET, Market
 
 
 class DailyBriefingService:
     """Sends a daily AI-powered news briefing to users before market open.
 
-    Runs once per day at 8:30 AM ET (1 hour before market open).
-    Fetches latest news for each stock in user's watchlist,
-    then uses AI to summarize and analyze sentiment.
+    Runs once per market per day, ~1 hour before that market opens (US at
+    12:30 UTC, SET at 02:00 UTC). Each run only covers the stocks that belong
+    to that market and only reaches users who actually hold one, so a Thai
+    watchlist gets a Thai-timed briefing and a US watchlist a US-timed one.
     """
 
     SYSTEM_PROMPT = """You are a concise stock news analyst.
@@ -36,13 +38,13 @@ Keep each stock to 2-3 lines max. Be direct and actionable."""
     def supabase(self):
         return get_supabase_client()
 
-    async def send_daily_briefings(self) -> None:
-        """Send daily news briefing to all users with LINE connected."""
-        print(f"[{datetime.now(timezone.utc)}] Starting daily news briefing...")
+    async def send_daily_briefings(self, market: Market = US_MARKET) -> None:
+        """Send the pre-open news briefing for one market to eligible users."""
+        print(f"[{datetime.now(timezone.utc)}] Starting {market.code} daily news briefing...")
 
-        # Check if already sent today
-        if await self._already_sent_today():
-            print("Daily briefing already sent today. Skipping.")
+        # Check if this market's briefing already went out today (its local day).
+        if await self._already_sent_today(market):
+            print(f"{market.code} daily briefing already sent today. Skipping.")
             return
 
         try:
@@ -51,25 +53,33 @@ Keep each stock to 2-3 lines max. Be direct and actionable."""
                 print("No users with LINE connected.")
                 return
 
+            sent = 0
             for user in users:
-                await self._send_briefing_to_user(user)
+                if await self._send_briefing_to_user(user, market):
+                    sent += 1
 
-            print(f"[{datetime.now(timezone.utc)}] Daily briefing complete. Sent to {len(users)} users.")
+            print(f"[{datetime.now(timezone.utc)}] {market.code} daily briefing complete. Sent to {sent} users.")
 
         except Exception as e:
-            print(f"Error sending daily briefings: {e}")
+            print(f"Error sending {market.code} daily briefings: {e}")
 
-    async def _already_sent_today(self) -> bool:
-        """Check if daily briefing was already sent today."""
+    @staticmethod
+    def _briefing_type(market: Market) -> str:
+        """Per-market signal_type so each market's 'already sent' guard is independent."""
+        return f"DAILY_BRIEFING:{market.code}"
+
+    async def _already_sent_today(self, market: Market) -> bool:
+        """Check if this market's briefing was already sent during its local day."""
         try:
-            today_start = datetime.now(timezone.utc).replace(
+            today_local = datetime.now(market.tz).replace(
                 hour=0, minute=0, second=0, microsecond=0
-            ).isoformat()
+            )
+            today_start = today_local.astimezone(timezone.utc).isoformat()
 
             response = await db(
                 self.supabase.table("alerts")
                 .select("id")
-                .eq("signal_type", "DAILY_BRIEFING")
+                .eq("signal_type", self._briefing_type(market))
                 .gte("sent_at", today_start)
                 .limit(1)
             )
@@ -94,8 +104,8 @@ Keep each stock to 2-3 lines max. Be direct and actionable."""
             print(f"Error fetching users: {e}")
             return []
 
-    async def _get_user_stocks(self, user_id: str) -> list[str]:
-        """Get all enabled stocks for a user."""
+    async def _get_user_stocks(self, user_id: str, market: Market) -> list[str]:
+        """Get the user's enabled stocks that belong to `market`."""
         try:
             response = await db(
                 self.supabase.table("watchlists")
@@ -116,19 +126,23 @@ Keep each stock to 2-3 lines max. Be direct and actionable."""
                 .eq("is_enabled", True)
             )
 
-            return [row["symbol"] for row in stocks_response.data]
+            return [
+                row["symbol"]
+                for row in stocks_response.data
+                if market_for_symbol(row["symbol"]).code == market.code
+            ]
 
         except Exception:
             return []
 
-    async def _send_briefing_to_user(self, user: dict) -> None:
-        """Generate and send daily news briefing to a single user."""
+    async def _send_briefing_to_user(self, user: dict, market: Market) -> bool:
+        """Generate and send this market's briefing to one user. Returns True if sent."""
         user_id = user["id"]
         line_user_id = user["line_user_id"]
 
-        symbols = await self._get_user_stocks(user_id)
+        symbols = await self._get_user_stocks(user_id, market)
         if not symbols:
-            return
+            return False  # user holds nothing in this market — nothing to send
 
         # Fetch news for all stocks (include even if no news)
         all_news: dict[str, list[str]] = {}
@@ -139,10 +153,10 @@ Keep each stock to 2-3 lines max. Be direct and actionable."""
         # Generate AI briefing from news
         briefing = await self._generate_news_briefing(all_news)
         if not briefing:
-            return
+            return False
 
         # Format and send
-        message = self._format_briefing_message(briefing, symbols)
+        message = self._format_briefing_message(briefing, symbols, market)
         is_sent = await self.line_service._send_push_message(line_user_id, message)
 
         if is_sent:
@@ -151,7 +165,7 @@ Keep each stock to 2-3 lines max. Be direct and actionable."""
                     self.supabase.table("alerts").insert({
                         "user_id": user_id,
                         "stock_symbol": ",".join(symbols[:5]),
-                        "signal_type": "DAILY_BRIEFING",
+                        "signal_type": self._briefing_type(market),
                         "ai_summary": briefing[:500],
                         "confidence": "—",
                         "reasons": symbols,
@@ -160,6 +174,8 @@ Keep each stock to 2-3 lines max. Be direct and actionable."""
                 )
             except Exception:
                 pass
+
+        return is_sent
 
     async def _fetch_stock_news(self, symbol: str) -> list[str]:
         """Fetch recent news headlines for a stock from Yahoo Finance."""
@@ -225,15 +241,17 @@ Keep each stock to 2-3 lines max. Be direct and actionable."""
             print(f"Error generating news briefing: {e}")
             return None
 
-    def _format_briefing_message(self, briefing: str, symbols: list[str]) -> str:
-        """Format the daily briefing for LINE notification."""
-        today = date.today().strftime("%d %b %Y")
+    def _format_briefing_message(
+        self, briefing: str, symbols: list[str], market: Market
+    ) -> str:
+        """Format the daily briefing for LINE notification (market-local date)."""
+        today = datetime.now(market.tz).strftime("%d %b %Y")
         return (
-            f"� Daily News Briefing — {today}\n"
+            f"📰 {market.code} Daily News Briefing — {today}\n"
             f"━━━━━━━━━━━━━━━\n"
             f"Watchlist: {', '.join(symbols[:8])}\n"
             f"━━━━━━━━━━━━━━━\n\n"
             f"{briefing}\n\n"
             f"━━━━━━━━━━━━━━━\n"
-            f"⏰ Market opens in 1 hour"
+            f"⏰ {market.code} market opens in ~1 hour ({market.tz_label})"
         )

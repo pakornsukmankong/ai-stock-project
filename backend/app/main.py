@@ -8,6 +8,7 @@ from app.services.scheduler import get_analysis_scheduler
 from app.services.daily_briefing import DailyBriefingService
 from app.services.performance_tracker import PerformanceTracker
 from app.services.cleanup import cleanup_old_alerts
+from app.services.markets import US_MARKET, SET_MARKET
 from app.core.config import get_settings
 from app.core.http_client import close_http_client
 from app.core.scheduler_instance import scheduler
@@ -41,15 +42,29 @@ async def lifespan(app: FastAPI):
                 id="cleanup_old_alerts",
                 replace_existing=True,
             )
-            # Daily briefing: runs at 8:30 AM ET (12:30 UTC) every weekday
+            # Daily briefing: one pre-open run per market (schedules are UTC).
             daily_briefing = DailyBriefingService()
+            # US: 8:30 AM ET ≈ 12:30 UTC (1h before the 9:30 ET open).
             scheduler.add_job(
                 daily_briefing.send_daily_briefings,
                 "cron",
                 hour=12,
                 minute=30,
                 day_of_week="mon-fri",
-                id="daily_briefing",
+                args=[US_MARKET],
+                id="daily_briefing_us",
+                replace_existing=True,
+            )
+            # SET: 9:00 AM ICT = 02:00 UTC (1h before the 10:00 ICT open; ICT has
+            # no DST, so this is exact year-round).
+            scheduler.add_job(
+                daily_briefing.send_daily_briefings,
+                "cron",
+                hour=2,
+                minute=0,
+                day_of_week="mon-fri",
+                args=[SET_MARKET],
+                id="daily_briefing_set",
                 replace_existing=True,
             )
             # Performance tracker: runs at 10:00 PM ET (02:00 UTC) every weekday
