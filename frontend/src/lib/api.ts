@@ -103,6 +103,16 @@ export const searchApi = {
     apiRequest<{ results: StockSearchResult[] }>(`/search/stocks?q=${encodeURIComponent(query)}`),
 };
 
+// Analysis API
+export const analysisApi = {
+  /** Force-send the daily briefing to the current user's LINE. */
+  triggerBriefing: () =>
+    apiRequest<{ sent_markets: string[]; detail: string }>(
+      "/analysis/briefing/trigger",
+      { method: "POST" },
+    ),
+};
+
 // User API
 export const userApi = {
   getProfile: () =>
