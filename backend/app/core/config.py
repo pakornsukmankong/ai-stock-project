@@ -14,6 +14,10 @@ class Settings(BaseSettings):
 
     # OpenAI
     openai_api_key: str = ""
+    # Model used for both the signal analysis and the daily news briefing.
+    # Overridable via OPENAI_MODEL so the model can be swapped without a code
+    # change. Default: GPT-5.6 Luna (fast, low-cost, high-volume tier).
+    openai_model: str = "gpt-5.6-luna"
 
     # LINE Messaging API
     line_channel_access_token: str = ""
