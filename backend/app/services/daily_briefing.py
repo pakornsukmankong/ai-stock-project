@@ -1,5 +1,5 @@
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Optional, Tuple
 from openai import AsyncOpenAI
 from app.core.config import get_settings
 from app.core.database import get_supabase_client, db
@@ -13,6 +13,11 @@ from app.services.markets import market_for_symbol, MARKETS, US_MARKET, Market
 # Covers a multi-stock briefing plus, on a reasoning model, the hidden reasoning
 # tokens that also count against this cap. A cap is not a spend — headroom is free.
 _MAX_OUTPUT_TOKENS = 8000
+
+# Why a briefing wasn't sent. Only NO_STOCKS is a normal, non-error outcome.
+NO_STOCKS = "no stocks in this market"
+AI_FAILED = "AI briefing generation failed"
+PUSH_FAILED = "LINE delivery failed"
 
 
 class DailyBriefingService:
@@ -61,7 +66,8 @@ Keep each stock to 2-3 lines max. Be direct and actionable."""
 
             sent = 0
             for user in users:
-                if await self._send_briefing_to_user(user, market):
+                delivered, _reason = await self._send_briefing_to_user(user, market)
+                if delivered:
                     sent += 1
 
             print(f"[{datetime.now(timezone.utc)}] {market.code} daily briefing complete. Sent to {sent} users.")
@@ -83,20 +89,29 @@ Keep each stock to 2-3 lines max. Be direct and actionable."""
         if not user:
             return {"sent_markets": [], "detail": "LINE account not connected."}
 
-        sent_markets = [
-            market.code
-            for market in MARKETS
-            if await self._send_briefing_to_user(user, market, manual=True)
-        ]
+        sent_markets = []
+        failures = []
+        for market in MARKETS:
+            delivered, reason = await self._send_briefing_to_user(
+                user, market, manual=True
+            )
+            if delivered:
+                sent_markets.append(market.code)
+            elif reason != NO_STOCKS:
+                # Holding nothing in a market is normal; anything else is a fault
+                # worth telling the user about verbatim.
+                failures.append(f"{market.code}: {reason}")
 
-        if not sent_markets:
+        if sent_markets:
             return {
-                "sent_markets": [],
-                "detail": "Nothing to send — your watchlist is empty or delivery failed.",
+                "sent_markets": sent_markets,
+                "detail": f"Briefing sent for: {', '.join(sent_markets)}",
             }
+        if failures:
+            return {"sent_markets": [], "detail": f"Could not send — {'; '.join(failures)}."}
         return {
-            "sent_markets": sent_markets,
-            "detail": f"Briefing sent for: {', '.join(sent_markets)}",
+            "sent_markets": [],
+            "detail": "No enabled stocks in your watchlist to brief on.",
         }
 
     async def _get_user_with_line(self, user_id: str) -> Optional[dict]:
@@ -188,19 +203,26 @@ Keep each stock to 2-3 lines max. Be direct and actionable."""
                 if market_for_symbol(row["symbol"]).code == market.code
             ]
 
-        except Exception:
+        except Exception as e:
+            # Don't let a DB fault masquerade as an empty watchlist.
+            monitor.log_error("daily_briefing", f"Watchlist lookup failed: {e}")
             return []
 
     async def _send_briefing_to_user(
         self, user: dict, market: Market, manual: bool = False
-    ) -> bool:
-        """Generate and send this market's briefing to one user. Returns True if sent."""
+    ) -> Tuple[bool, str]:
+        """Generate and send this market's briefing to one user.
+
+        Returns (sent, reason). `reason` names the stage that stopped it —
+        collapsing "no stocks", "AI failed" and "push failed" into one bare
+        False made a real outage read as an empty watchlist.
+        """
         user_id = user["id"]
         line_user_id = user["line_user_id"]
 
         symbols = await self._get_user_stocks(user_id, market)
         if not symbols:
-            return False  # user holds nothing in this market — nothing to send
+            return False, NO_STOCKS  # nothing in this market — not an error
 
         # Fetch news for all stocks (include even if no news)
         all_news: dict[str, list[str]] = {}
@@ -211,7 +233,7 @@ Keep each stock to 2-3 lines max. Be direct and actionable."""
         # Generate AI briefing from news
         briefing = await self._generate_news_briefing(all_news)
         if not briefing:
-            return False
+            return False, AI_FAILED
 
         # Format and send
         message = self._format_briefing_message(briefing, symbols, market)
@@ -232,8 +254,12 @@ Keep each stock to 2-3 lines max. Be direct and actionable."""
                 )
             except Exception:
                 pass
+            return True, ""
 
-        return is_sent
+        monitor.log_error(
+            "daily_briefing", f"LINE push failed for {market.code} briefing"
+        )
+        return False, PUSH_FAILED
 
     async def _fetch_stock_news(self, symbol: str) -> list[str]:
         """Fetch recent news headlines for a stock from Yahoo Finance."""
@@ -293,7 +319,22 @@ Keep each stock to 2-3 lines max. Be direct and actionable."""
                 )
             )
 
-            return response.choices[0].message.content or ""
+            choice = response.choices[0]
+            content = (choice.message.content or "").strip()
+            if not content:
+                # A reasoning model can spend the whole budget thinking and
+                # return an empty message with finish_reason="length". That used
+                # to look identical to "no stocks", so name it explicitly.
+                usage = getattr(response, "usage", None)
+                detail = (
+                    f"empty response (finish_reason={getattr(choice, 'finish_reason', '?')}, "
+                    f"usage={usage})"
+                )
+                monitor.log_error("daily_briefing", f"OpenAI briefing {detail}")
+                print(f"Error generating news briefing: {detail}")
+                return None
+
+            return content
 
         except Exception as e:
             monitor.log_error("daily_briefing", f"OpenAI briefing call failed: {e}")

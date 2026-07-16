@@ -92,3 +92,52 @@ async def test_send_briefing_now_targets_only_the_caller(monkeypatch):
     assert result["sent_markets"] == ["US", "SET"]
     # One push per market, and never to anyone but the caller.
     assert pushes == ["Ucaller", "Ucaller"]
+
+
+@pytest.mark.asyncio
+async def test_send_briefing_now_reports_ai_failure_not_empty_watchlist(monkeypatch):
+    """A failing AI call must not be reported as an empty watchlist."""
+    svc = _svc()
+
+    async def one_user(user_id):
+        return {"id": user_id, "line_user_id": "Ucaller"}
+
+    async def stocks(_user_id, market):
+        return ["AAPL"] if market.code == "US" else []
+
+    async def news(_symbol):
+        return ["headline"]
+
+    async def ai_down(_all_news):
+        return None  # e.g. 400, or an empty reasoning-model response
+
+    monkeypatch.setattr(svc, "_get_user_with_line", one_user)
+    monkeypatch.setattr(svc, "_get_user_stocks", stocks)
+    monkeypatch.setattr(svc, "_fetch_stock_news", news)
+    monkeypatch.setattr(svc, "_generate_news_briefing", ai_down)
+
+    result = await svc.send_briefing_now("u1")
+
+    assert result["sent_markets"] == []
+    assert "Could not send" in result["detail"]
+    assert "AI briefing generation failed" in result["detail"]
+    # SET had no stocks — a normal outcome, not reported as a failure.
+    assert "SET" not in result["detail"]
+
+
+@pytest.mark.asyncio
+async def test_send_briefing_now_with_truly_empty_watchlist(monkeypatch):
+    svc = _svc()
+
+    async def one_user(user_id):
+        return {"id": user_id, "line_user_id": "Ucaller"}
+
+    async def no_stocks(_user_id, _market):
+        return []
+
+    monkeypatch.setattr(svc, "_get_user_with_line", one_user)
+    monkeypatch.setattr(svc, "_get_user_stocks", no_stocks)
+
+    result = await svc.send_briefing_now("u1")
+    assert result["sent_markets"] == []
+    assert "No enabled stocks" in result["detail"]
