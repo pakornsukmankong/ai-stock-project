@@ -20,14 +20,20 @@ from app.core.error_monitor import monitor
 
 logger = logging.getLogger(__name__)
 
+# At import, not in the lifespan: uvicorn configures its loggers in Config(),
+# then imports this module, and only *then* logs "Started server process" /
+# "Waiting for application startup." before handing over to the lifespan. Doing
+# this any later leaves those first lines on stderr, reported as errors.
+adopt_uvicorn_loggers()
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Manage application lifecycle - start/stop scheduler."""
     settings = get_settings()
 
-    # Uvicorn has configured its own loggers by now; route them through ours so
-    # its INFO lines stop being reported as errors.
+    # Again for the programmatic path (uvicorn.run(app)), where the app object is
+    # imported *before* Config() re-installs uvicorn's own handlers. Idempotent.
     adopt_uvicorn_loggers()
 
     # Verify the configured AI model is reachable, so a bad/unentitled
