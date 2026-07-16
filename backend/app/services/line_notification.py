@@ -12,6 +12,41 @@ RATE_LIMITED = "rate_limited"      # transient 429 — safe to retry
 MONTHLY_LIMIT = "monthly_limit"    # quota exhausted — retrying is pointless
 FAILED = "failed"                  # other error — retry next cycle
 
+# LINE hard limits: one text message is at most 5000 characters, and a single
+# push request carries at most 5 message objects. Exceeding either is a 400 —
+# a big watchlist's briefing (or a digest with many signals) blows past 5000.
+MAX_TEXT_LENGTH = 5000
+MAX_MESSAGES_PER_PUSH = 5
+_TRUNCATION_NOTICE = "\n… (truncated)"
+
+
+def chunk_text(text: str, limit: int = MAX_TEXT_LENGTH) -> list:
+    """Split text into <=limit chunks, breaking on line boundaries where possible."""
+    if len(text) <= limit:
+        return [text]
+
+    chunks: list = []
+    current = ""
+    for line in text.split("\n"):
+        # A single line longer than the limit has no boundary to break on.
+        while len(line) > limit:
+            if current:
+                chunks.append(current)
+                current = ""
+            chunks.append(line[:limit])
+            line = line[limit:]
+
+        candidate = f"{current}\n{line}" if current else line
+        if len(candidate) > limit:
+            chunks.append(current)
+            current = line
+        else:
+            current = candidate
+
+    if current:
+        chunks.append(current)
+    return chunks
+
 
 class LineNotificationService:
     """Sends push notifications via LINE Official Account Messaging API.
@@ -116,7 +151,10 @@ class LineNotificationService:
 
         payload = {
             "replyToken": reply_token,
-            "messages": [{"type": "text", "text": message}],
+            "messages": [
+                {"type": "text", "text": chunk}
+                for chunk in chunk_text(message)[:MAX_MESSAGES_PER_PUSH]
+            ],
         }
         try:
             client = get_http_client()
@@ -144,10 +182,22 @@ class LineNotificationService:
         return await self.send_text(line_user_id, message)
 
     async def _call_push(self, line_user_id: str, message: str) -> str:
-        """Perform one push request and classify the outcome."""
+        """Perform one push request and classify the outcome.
+
+        Long messages are split across message objects rather than rejected:
+        LINE 400s anything over 5000 characters, which a large watchlist's
+        briefing exceeds. Beyond the 5-object ceiling the tail is dropped with a
+        notice — a truncated briefing beats no briefing.
+        """
+        chunks = chunk_text(message)
+        if len(chunks) > MAX_MESSAGES_PER_PUSH:
+            chunks = chunks[:MAX_MESSAGES_PER_PUSH]
+            tail = chunks[-1][: MAX_TEXT_LENGTH - len(_TRUNCATION_NOTICE)]
+            chunks[-1] = tail + _TRUNCATION_NOTICE
+
         payload = {
             "to": line_user_id,
-            "messages": [{"type": "text", "text": message}],
+            "messages": [{"type": "text", "text": chunk} for chunk in chunks],
         }
 
         try:
