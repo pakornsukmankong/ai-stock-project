@@ -8,6 +8,7 @@ from app.services.scheduler import get_analysis_scheduler
 from app.services.daily_briefing import DailyBriefingService
 from app.services.performance_tracker import PerformanceTracker
 from app.services.cleanup import cleanup_old_alerts
+from app.services.ai_health import check_openai_model_access
 from app.services.markets import US_MARKET, SET_MARKET
 from app.core.config import get_settings
 from app.core.http_client import close_http_client
@@ -20,6 +21,15 @@ from app.core.error_monitor import monitor
 async def lifespan(app: FastAPI):
     """Manage application lifecycle - start/stop scheduler."""
     settings = get_settings()
+
+    # Verify the configured AI model is reachable, so a bad/unentitled
+    # OPENAI_MODEL surfaces at boot instead of failing silently every cycle.
+    ok, message = await check_openai_model_access()
+    if ok:
+        print(f"OpenAI model check: OK — {message}")
+    else:
+        monitor.log_error("startup", f"OpenAI model check failed: {message}")
+        print(f"⚠️  OpenAI model check: {message}")
 
     # Only start scheduler if Supabase is configured
     if settings.supabase_url and settings.supabase_service_role_key:
@@ -92,7 +102,7 @@ async def lifespan(app: FastAPI):
                 f"Cleanup job: runs every 6 hours "
                 f"(retention: {settings.alerts_retention_days} days)"
             )
-            print("Daily briefing: runs at 8:30 AM ET (Mon-Fri)")
+            print("Daily briefing: US 12:30 UTC & SET 02:00 UTC (Mon-Fri)")
         except Exception as e:
             monitor.log_error("startup", f"Scheduler failed to start: {e}")
             print(f"Warning: Scheduler failed to start: {e}")
