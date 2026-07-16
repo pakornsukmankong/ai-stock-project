@@ -5,6 +5,11 @@ import json
 from app.core.config import get_settings
 from app.core.error_monitor import monitor
 from app.services.ai_health import build_chat_request
+
+# The JSON verdict itself is a few hundred tokens, but on a reasoning model this
+# budget must also absorb the hidden reasoning tokens — 500 left nothing to
+# answer with. It's a cap, not a spend, so the headroom is free.
+_MAX_OUTPUT_TOKENS = 4000
 from app.core.database import get_supabase_client, db
 from app.schemas.stock import StockSignalSummary, AIAnalysisResult
 
@@ -125,7 +130,7 @@ Respond ONLY with the JSON object, no other text."""
                         {"role": "system", "content": self.SYSTEM_PROMPT},
                         {"role": "user", "content": user_message},
                     ],
-                    500,
+                    _MAX_OUTPUT_TOKENS,
                 )
             )
 

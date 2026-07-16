@@ -10,6 +10,10 @@ from app.services.ai_health import build_chat_request
 from app.services.line_notification import LineNotificationService
 from app.services.markets import market_for_symbol, MARKETS, US_MARKET, Market
 
+# Covers a multi-stock briefing plus, on a reasoning model, the hidden reasoning
+# tokens that also count against this cap. A cap is not a spend — headroom is free.
+_MAX_OUTPUT_TOKENS = 8000
+
 
 class DailyBriefingService:
     """Sends a daily AI-powered news briefing to users before market open.
@@ -285,7 +289,7 @@ Keep each stock to 2-3 lines max. Be direct and actionable."""
                         {"role": "system", "content": self.SYSTEM_PROMPT},
                         {"role": "user", "content": user_message},
                     ],
-                    5000,
+                    _MAX_OUTPUT_TOKENS,
                 )
             )
 

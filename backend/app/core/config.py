@@ -23,6 +23,11 @@ class Settings(BaseSettings):
     # reject an explicit non-default value with a 400, so it is omitted from the
     # request unless set here. Set e.g. 0.2 only on models that support it.
     openai_temperature: Optional[float] = None
+    # Reasoning budget for GPT-5-family models: minimal | low | medium | high.
+    # Their hidden reasoning tokens are billed and count against
+    # max_completion_tokens, so "minimal" cuts cost and latency. Omitted unless
+    # set, because non-reasoning models (e.g. gpt-4o-mini) reject the parameter.
+    openai_reasoning_effort: Optional[str] = None
 
     # LINE Messaging API
     line_channel_access_token: str = ""

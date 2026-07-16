@@ -14,6 +14,10 @@ from app.core.config import get_settings
 
 # Keep the boot check snappy — never let a slow/hung API stall startup.
 _CHECK_TIMEOUT_SECONDS = 10.0
+# Budget for the probe completion. Must leave room for a reasoning model's
+# hidden tokens: a budget of 1 makes the model burn it all thinking and 400 with
+# "Could not finish the message", which looks like a config error but isn't.
+_CHECK_MAX_TOKENS = 1000
 
 
 def build_chat_request(
@@ -23,8 +27,13 @@ def build_chat_request(
 
     - `max_completion_tokens`, not `max_tokens`: GPT-5-family models reject the
       latter with a 400 (it also works on older models, so it's the safe choice).
-    - `temperature` is only sent when explicitly configured: GPT-5-family models
-      accept only the default and 400 on an explicit non-default value.
+      NOTE: on reasoning models this budget also covers the hidden reasoning
+      tokens, so it must be generous — too low and the model spends it all
+      thinking and 400s with "Could not finish the message". It is a cap, not a
+      spend, so headroom costs nothing.
+    - `temperature` / `reasoning_effort` are only sent when explicitly
+      configured: GPT-5-family models 400 on a non-default temperature, and
+      non-reasoning models 400 on reasoning_effort.
     """
     settings = get_settings()
     request: Dict[str, Any] = {
@@ -34,6 +43,8 @@ def build_chat_request(
     }
     if settings.openai_temperature is not None:
         request["temperature"] = settings.openai_temperature
+    if settings.openai_reasoning_effort:
+        request["reasoning_effort"] = settings.openai_reasoning_effort
     return request
 
 
@@ -55,7 +66,9 @@ async def check_openai_model_access() -> Tuple[bool, str]:
             api_key=settings.openai_api_key, timeout=_CHECK_TIMEOUT_SECONDS
         )
         await client.chat.completions.create(
-            **build_chat_request([{"role": "user", "content": "ping"}], 1)
+            **build_chat_request(
+                [{"role": "user", "content": "ping"}], _CHECK_MAX_TOKENS
+            )
         )
         return True, f"OpenAI model '{model}' is usable."
     except Exception as e:
