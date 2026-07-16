@@ -1,7 +1,14 @@
 """Daily briefing tests — market-aware type + message formatting (offline)."""
+from unittest.mock import AsyncMock, MagicMock
+
 import pytest
 
-from app.services.daily_briefing import DailyBriefingService
+from app.services import line_notification as ln
+from app.services.daily_briefing import (
+    DailyBriefingService,
+    _BRIEFING_BODY_BUDGET,
+    _MIN_CHARS_PER_STOCK,
+)
 from app.services.markets import US_MARKET, SET_MARKET
 
 
@@ -27,6 +34,55 @@ def test_message_labels_set_market():
     assert "SET Daily News Briefing" in msg
     assert "SET market opens in ~1 hour (ICT)" in msg
     assert "PTT.BK" in msg
+
+
+# --------------------------------------------------------------------------- #
+# Length budget — the briefing must fit in ONE LINE message
+# --------------------------------------------------------------------------- #
+def test_body_at_full_budget_still_fits_one_line_message():
+    """The reserve for header/watchlist/footer must cover the real overhead.
+
+    If it doesn't, LINE splits the briefing into a second message, which costs
+    another unit of the monthly quota.
+    """
+    symbols = [f"SYM{i}" for i in range(18)]
+    msg = _svc()._format_briefing_message("x" * _BRIEFING_BODY_BUDGET, symbols, US_MARKET)
+
+    assert len(msg) <= ln.MAX_TEXT_LENGTH
+    assert len(ln.chunk_text(msg)) == 1
+
+
+@pytest.mark.asyncio
+async def test_prompt_states_a_budget_that_scales_with_watchlist_size():
+    svc = _svc()
+    svc.client = MagicMock()
+    svc.client.chat.completions.create = AsyncMock(
+        return_value=MagicMock(
+            choices=[MagicMock(message=MagicMock(content="AAPL 🟢 ok"))]
+        )
+    )
+
+    await svc._generate_news_briefing({f"S{i}": ["headline"] for i in range(18)})
+
+    prompt = svc.client.chat.completions.create.await_args.kwargs["messages"][-1]["content"]
+    assert str(_BRIEFING_BODY_BUDGET) in prompt          # total hard limit
+    assert str(_BRIEFING_BODY_BUDGET // 18) in prompt    # per-stock share
+    assert "18 stocks" in prompt
+
+
+@pytest.mark.asyncio
+async def test_per_stock_budget_never_drops_below_the_floor():
+    svc = _svc()
+    svc.client = MagicMock()
+    svc.client.chat.completions.create = AsyncMock(
+        return_value=MagicMock(choices=[MagicMock(message=MagicMock(content="x"))])
+    )
+
+    # A watchlist big enough that an even split would be unwritably small.
+    await svc._generate_news_briefing({f"S{i}": ["h"] for i in range(500)})
+
+    prompt = svc.client.chat.completions.create.await_args.kwargs["messages"][-1]["content"]
+    assert f"~{_MIN_CHARS_PER_STOCK} characters per stock" in prompt
 
 
 # --------------------------------------------------------------------------- #
