@@ -3,8 +3,10 @@ from typing import Optional
 from openai import AsyncOpenAI
 from app.core.config import get_settings
 from app.core.database import get_supabase_client, db
+from app.core.error_monitor import monitor
 from app.core.http_client import get_http_client
 from app.core.validation import is_valid_symbol
+from app.services.ai_health import build_chat_request
 from app.services.line_notification import LineNotificationService
 from app.services.markets import market_for_symbol, US_MARKET, Market
 
@@ -226,18 +228,19 @@ Keep each stock to 2-3 lines max. Be direct and actionable."""
             )
 
             response = await self.client.chat.completions.create(
-                model=self.settings.openai_model,
-                messages=[
-                    {"role": "system", "content": self.SYSTEM_PROMPT},
-                    {"role": "user", "content": user_message},
-                ],
-                max_tokens=5000,
-                temperature=0.3,
+                **build_chat_request(
+                    [
+                        {"role": "system", "content": self.SYSTEM_PROMPT},
+                        {"role": "user", "content": user_message},
+                    ],
+                    5000,
+                )
             )
 
             return response.choices[0].message.content or ""
 
         except Exception as e:
+            monitor.log_error("daily_briefing", f"OpenAI briefing call failed: {e}")
             print(f"Error generating news briefing: {e}")
             return None
 
