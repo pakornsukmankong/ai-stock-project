@@ -1,9 +1,12 @@
+import logging
 import asyncio
 from typing import Optional
 from app.core.config import get_settings
 from app.core.http_client import get_http_client
 from app.services.markets import market_for_symbol, market_local_time
 from app.schemas.stock import AIAnalysisResult
+
+logger = logging.getLogger(__name__)
 
 
 # Outcome of a LINE push attempt.
@@ -117,7 +120,7 @@ class LineNotificationService:
             return {"type": "limited", "limit": limit, "used": used, "remaining": remaining}
 
         except Exception as e:
-            print(f"[LINE] Failed to fetch quota: {e}")
+            logger.error(f"[LINE] Failed to fetch quota: {e}")
             return {"type": "unknown", "limit": None, "used": 0, "remaining": None}
 
     # ------------------------------------------------------------------ #
@@ -165,10 +168,10 @@ class LineNotificationService:
                 timeout=10.0,
             )
             if response.status_code != 200:
-                print(f"[LINE] Reply failed {response.status_code}: {response.text[:200]}")
+                logger.error(f"[LINE] Reply failed {response.status_code}: {response.text[:200]}")
             return response.status_code == 200
         except Exception as e:
-            print(f"[LINE] Reply error: {e}")
+            logger.error(f"[LINE] Reply error: {e}")
             return False
 
     async def send_buy_alert(
@@ -220,11 +223,11 @@ class LineNotificationService:
                 print(f"[LINE] Rate limited (429): {response.text[:200]}")
                 return RATE_LIMITED
 
-            print(f"[LINE] Push failed {response.status_code}: {response.text[:200]}")
+            logger.error(f"[LINE] Push failed {response.status_code}: {response.text[:200]}")
             return FAILED
 
         except Exception as e:
-            print(f"[LINE] Push error for {line_user_id}: {e}")
+            logger.error(f"[LINE] Push error for {line_user_id}: {e}")
             return FAILED
 
     # Backward-compatible bool wrapper (used by daily briefing).

@@ -1,8 +1,11 @@
+import logging
 import pandas as pd
 import numpy as np
 import ta
 from typing import Optional
 from dataclasses import dataclass, field
+
+logger = logging.getLogger(__name__)
 
 # Divergence detection params
 DIVERGENCE_LOOKBACK = 40   # bars to scan for swing lows
@@ -158,7 +161,7 @@ class IndicatorEngine:
             return result
 
         except Exception as e:
-            print(f"Error calculating indicators: {e}")
+            logger.error(f"Error calculating indicators: {e}")
             return None
 
     def _calculate_moving_averages(self, df: pd.DataFrame, result: IndicatorResult) -> None:

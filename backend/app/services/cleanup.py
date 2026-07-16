@@ -1,8 +1,11 @@
+import logging
 from datetime import datetime, timedelta, timezone
 
 from app.core.config import get_settings
 from app.core.database import get_supabase_client, db
 from app.services.line_linking import delete_expired_codes
+
+logger = logging.getLogger(__name__)
 
 
 async def cleanup_old_alerts() -> None:
@@ -26,4 +29,4 @@ async def cleanup_old_alerts() -> None:
         print(f"Cleanup complete: removed alerts older than {retention_days} days")
 
     except Exception as e:
-        print(f"Cleanup error: {e}")
+        logger.error(f"Cleanup error: {e}")

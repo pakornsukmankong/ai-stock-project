@@ -1,3 +1,4 @@
+import logging
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -12,15 +13,22 @@ from app.services.ai_health import check_openai_model_access
 from app.services.markets import US_MARKET, SET_MARKET
 from app.core.config import get_settings
 from app.core.http_client import close_http_client
+from app.core.logging_config import adopt_uvicorn_loggers
 from app.core.scheduler_instance import scheduler
 from app.core.rate_limiter import api_limiter, trigger_limiter
 from app.core.error_monitor import monitor
+
+logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Manage application lifecycle - start/stop scheduler."""
     settings = get_settings()
+
+    # Uvicorn has configured its own loggers by now; route them through ours so
+    # its INFO lines stop being reported as errors.
+    adopt_uvicorn_loggers()
 
     # Verify the configured AI model is reachable, so a bad/unentitled
     # OPENAI_MODEL surfaces at boot instead of failing silently every cycle.
@@ -105,9 +113,9 @@ async def lifespan(app: FastAPI):
             print("Daily briefing: US 12:30 UTC & SET 02:00 UTC (Mon-Fri)")
         except Exception as e:
             monitor.log_error("startup", f"Scheduler failed to start: {e}")
-            print(f"Warning: Scheduler failed to start: {e}")
+            logger.error(f"Scheduler failed to start: {e}")
     else:
-        print("Warning: Supabase not configured. Scheduler disabled.")
+        logger.warning("Supabase not configured. Scheduler disabled.")
 
     yield
 

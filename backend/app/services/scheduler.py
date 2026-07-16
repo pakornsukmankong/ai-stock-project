@@ -1,3 +1,4 @@
+import logging
 import asyncio
 from datetime import datetime, timezone, timedelta
 from functools import lru_cache
@@ -12,6 +13,8 @@ from app.services.mtf_engine import MTFEngine
 from app.services.ai_analysis import AIAnalysisService
 from app.services.line_notification import LineNotificationService, MONTHLY_LIMIT, SENT
 from app.schemas.stock import StockSignalSummary
+
+logger = logging.getLogger(__name__)
 
 
 class AnalysisScheduler:
@@ -124,7 +127,7 @@ class AnalysisScheduler:
 
         except Exception as e:
             monitor.log_scheduler_failure(str(e))
-            print(f"[{datetime.now(timezone.utc)}] Analysis cycle FAILED: {e}")
+            logger.error(f"Analysis cycle FAILED: {e}")
 
     async def _get_watchers(self) -> dict[str, list[dict]]:
         """Map every actively-tracked symbol to the users watching it.
@@ -165,7 +168,7 @@ class AnalysisScheduler:
 
             return watchers
         except Exception as e:
-            print(f"Error fetching active symbols: {e}")
+            logger.error(f"Error fetching active symbols: {e}")
             return {}
 
     async def _get_recently_alerted(self) -> set[tuple[str, str]]:
@@ -186,7 +189,7 @@ class AnalysisScheduler:
 
             return {(row["user_id"], row["stock_symbol"]) for row in response.data}
         except Exception as e:
-            print(f"Error fetching recent alerts: {e}")
+            logger.error(f"Error fetching recent alerts: {e}")
             # Fail closed: an empty set would let every signal through and
             # re-alert users who are still inside their cooldown window.
             raise
@@ -218,7 +221,7 @@ class AnalysisScheduler:
                     symbol, daily_df=df, daily_indicators=indicators
                 )
             except Exception as e:
-                print(f"  MTF analysis failed for {symbol} (using single TF): {e}")
+                logger.warning(f"MTF analysis failed for {symbol} (using single TF): {e}")
                 mtf_result = None
 
             # Step 4: Run signal engine with MTF adjustment
@@ -319,7 +322,7 @@ class AnalysisScheduler:
             )
 
         except Exception as e:
-            print(f"Error analyzing {symbol}: {e}")
+            logger.error(f"Error analyzing {symbol}: {e}")
 
     def _build_weekly_candles(self, df) -> list[dict]:
         """Resample daily data to weekly candles (52 weeks = 1 year overview).
@@ -353,7 +356,7 @@ class AnalysisScheduler:
                 })
             return candles
         except Exception as e:
-            print(f"Error building weekly candles: {e}")
+            logger.error(f"Error building weekly candles: {e}")
             return []
 
     def _build_recent_daily_candles(self, df) -> list[dict]:
@@ -380,7 +383,7 @@ class AnalysisScheduler:
                 })
             return candles
         except Exception as e:
-            print(f"Error building daily candles: {e}")
+            logger.error(f"Error building daily candles: {e}")
             return []
 
     def _collect_users(
@@ -462,7 +465,7 @@ class AnalysisScheduler:
                 else:
                     # Transient (rate limit / other failure): leave unsaved so the
                     # next cycle retries delivery.
-                    print(f"[LINE] Delivery failed for {user_id} ({status}); will retry next cycle.")
+                    logger.warning(f"[LINE] Delivery failed for {user_id} ({status}); will retry next cycle.")
 
             if should_save:
                 for item in items:
@@ -511,7 +514,7 @@ class AnalysisScheduler:
                 )
             )
         except Exception as e:
-            print(f"Error saving alert for {user_id}/{symbol}: {e}")
+            logger.error(f"Error saving alert for {user_id}/{symbol}: {e}")
 
 
 @lru_cache()

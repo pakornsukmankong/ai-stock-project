@@ -1,3 +1,4 @@
+import logging
 from openai import AsyncOpenAI
 from datetime import datetime, timedelta, timezone
 from typing import Optional
@@ -5,13 +6,15 @@ import json
 from app.core.config import get_settings
 from app.core.error_monitor import monitor
 from app.services.ai_health import build_chat_request
+from app.core.database import get_supabase_client, db
+from app.schemas.stock import StockSignalSummary, AIAnalysisResult
+
+logger = logging.getLogger(__name__)
 
 # The JSON verdict itself is a few hundred tokens, but on a reasoning model this
 # budget must also absorb the hidden reasoning tokens — 500 left nothing to
 # answer with. It's a cap, not a spend, so the headroom is free.
 _MAX_OUTPUT_TOKENS = 4000
-from app.core.database import get_supabase_client, db
-from app.schemas.stock import StockSignalSummary, AIAnalysisResult
 
 
 class AIAnalysisService:
@@ -116,7 +119,7 @@ Respond ONLY with the JSON object, no other text."""
             return None
 
         except Exception as e:
-            print(f"Error checking cache for {symbol}: {e}")
+            logger.error(f"Error checking cache for {symbol}: {e}")
             return None
 
     async def _call_openai(self, summary: StockSignalSummary) -> Optional[AIAnalysisResult]:
@@ -144,7 +147,7 @@ Respond ONLY with the JSON object, no other text."""
             # Report it: a failing AI call silently suppresses every alert, so
             # this must surface in /health rather than only in stdout.
             monitor.log_error("ai_analysis", f"OpenAI call failed for {summary.symbol}: {e}")
-            print(f"Error calling OpenAI for {summary.symbol}: {e}")
+            logger.error(f"Error calling OpenAI for {summary.symbol}: {e}")
             return None
 
     def _build_indicator_message(self, s: StockSignalSummary) -> str:
@@ -302,4 +305,4 @@ Respond ONLY with the JSON object, no other text."""
             )
 
         except Exception as e:
-            print(f"Error caching analysis for {result.symbol}: {e}")
+            logger.error(f"Error caching analysis for {result.symbol}: {e}")

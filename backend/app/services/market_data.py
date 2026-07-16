@@ -1,9 +1,12 @@
+import logging
 import pandas as pd
 from typing import Optional
 
 from app.core.config import get_settings
 from app.core.http_client import get_http_client
 from app.core.validation import is_valid_symbol
+
+logger = logging.getLogger(__name__)
 
 
 class MarketDataService:
@@ -32,7 +35,7 @@ class MarketDataService:
         # The symbol lands in the request path, so it is validated here as well as
         # at the API boundary — this is also reachable from the scheduler and DB.
         if not is_valid_symbol(symbol):
-            print(f"Refusing to fetch market data for invalid symbol: {symbol!r}")
+            logger.warning(f"Refusing to fetch market data for invalid symbol: {symbol!r}")
             return None
 
         # Yahoo Finance has no native 4h interval — synthesize it by resampling
@@ -89,7 +92,7 @@ class MarketDataService:
             return df
 
         except Exception as e:
-            print(f"Error fetching market data for {symbol}: {e}")
+            logger.error(f"Error fetching market data for {symbol}: {e}")
             return None
 
     def _resample_to_4h(self, df: pd.DataFrame) -> pd.DataFrame:

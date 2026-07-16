@@ -1,3 +1,4 @@
+import logging
 from datetime import datetime, timezone
 from typing import Optional, Tuple
 from openai import AsyncOpenAI
@@ -9,6 +10,8 @@ from app.core.validation import is_valid_symbol
 from app.services.ai_health import build_chat_request
 from app.services.line_notification import LineNotificationService, MAX_TEXT_LENGTH
 from app.services.markets import market_for_symbol, MARKETS, US_MARKET, Market
+
+logger = logging.getLogger(__name__)
 
 # Covers a multi-stock briefing plus, on a reasoning model, the hidden reasoning
 # tokens that also count against this cap. A cap is not a spend — headroom is free.
@@ -88,7 +91,7 @@ Rules:
             print(f"[{datetime.now(timezone.utc)}] {market.code} daily briefing complete. Sent to {sent} users.")
 
         except Exception as e:
-            print(f"Error sending {market.code} daily briefings: {e}")
+            logger.error(f"Error sending {market.code} daily briefings: {e}")
 
     async def send_briefing_now(self, user_id: str) -> dict:
         """Force-send briefings to ONE user, for every market they hold stocks in.
@@ -187,7 +190,7 @@ Rules:
             return response.data
 
         except Exception as e:
-            print(f"Error fetching users: {e}")
+            logger.error(f"Error fetching users: {e}")
             return []
 
     async def _get_user_stocks(self, user_id: str, market: Market) -> list[str]:
@@ -356,14 +359,14 @@ Rules:
                     f"usage={usage})"
                 )
                 monitor.log_error("daily_briefing", f"OpenAI briefing {detail}")
-                print(f"Error generating news briefing: {detail}")
+                logger.error(f"Error generating news briefing: {detail}")
                 return None
 
             return content
 
         except Exception as e:
             monitor.log_error("daily_briefing", f"OpenAI briefing call failed: {e}")
-            print(f"Error generating news briefing: {e}")
+            logger.error(f"Error generating news briefing: {e}")
             return None
 
     def _format_briefing_message(
