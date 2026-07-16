@@ -112,7 +112,7 @@ supabase/migrations/001_initial_schema.sql
 1. ไปที่ https://platform.openai.com → Sign up / Login
 2. ไปที่ **API Keys** → **Create new secret key**
 3. Copy key → ใส่ใน `OPENAI_API_KEY`
-4. ตรวจสอบว่ามี credit / billing ตั้งค่าแล้ว (ระบบใช้ `gpt-4o-mini` ซึ่งราคาถูก)
+4. ตรวจสอบว่ามี credit / billing ตั้งค่าแล้ว (ค่าเริ่มต้นคือ `gpt-5.6-luna` ปรับได้ด้วย `OPENAI_MODEL`)
 
 #### 3. LINE Messaging API
 

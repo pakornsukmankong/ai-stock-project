@@ -118,7 +118,7 @@ Respond ONLY with the JSON object, no other text."""
             user_message = self._build_indicator_message(summary)
 
             response = await self.client.chat.completions.create(
-                model="gpt-4o-mini",
+                model=self.settings.openai_model,
                 messages=[
                     {"role": "system", "content": self.SYSTEM_PROMPT},
                     {"role": "user", "content": user_message},

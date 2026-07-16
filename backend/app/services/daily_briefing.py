@@ -226,7 +226,7 @@ Keep each stock to 2-3 lines max. Be direct and actionable."""
             )
 
             response = await self.client.chat.completions.create(
-                model="gpt-4o-mini",
+                model=self.settings.openai_model,
                 messages=[
                     {"role": "system", "content": self.SYSTEM_PROMPT},
                     {"role": "user", "content": user_message},
