@@ -5,7 +5,7 @@ from app.core.config import get_settings
 from app.core.database import get_supabase_client, db
 from app.core.error_monitor import monitor
 from app.services.market_data import MarketDataService
-from app.services.market_hours import is_market_open, get_market_status
+from app.services.markets import market_for_symbol, any_market_open, open_market_codes
 from app.services.indicator_engine import IndicatorEngine
 from app.services.signal_engine import SignalEngine
 from app.services.mtf_engine import MTFEngine
@@ -51,10 +51,11 @@ class AnalysisScheduler:
 
     async def run_analysis_cycle(self) -> None:
         """Run one complete analysis cycle for all active stocks."""
-        # Skip if market is closed (only run during regular hours 9:30 AM - 4:00 PM ET)
-        if not is_market_open(include_extended=False):
-            status = get_market_status()
-            print(f"[{datetime.now(timezone.utc)}] Market closed ({status['reason']}). Skipping analysis.")
+        # Skip only when EVERY supported market is closed. Symbols are filtered to
+        # the currently-open exchange(s) inside the cycle, so a Thai stock is
+        # analyzed during SET hours and a US stock during US hours.
+        if not any_market_open():
+            print(f"[{datetime.now(timezone.utc)}] All markets closed. Skipping analysis.")
             return
 
         if self._cycle_lock.locked():
@@ -71,18 +72,29 @@ class AnalysisScheduler:
             # One query up-front for the whole watcher graph, instead of one query
             # per symbol plus one per (user, symbol) pair later in the cycle.
             watchers = await self._get_watchers()
-            symbols = list(watchers.keys())
-            if not symbols:
+            all_symbols = list(watchers.keys())
+            if not all_symbols:
                 print("No active symbols to analyze.")
                 monitor.log_scheduler_success()
                 return
 
             # Forget edge-trigger state for symbols no longer watched (so a
-            # re-added symbol gets a fresh edge).
-            active_set = set(symbols)
+            # re-added symbol gets a fresh edge). Keyed on ALL watched symbols,
+            # not just the ones analyzed this cycle, so a closed-market symbol
+            # keeps its state until its exchange opens again.
+            active_set = set(all_symbols)
             self._signal_active = {
                 s: v for s, v in self._signal_active.items() if s in active_set
             }
+
+            # Analyze only symbols whose exchange is open right now. US and SET
+            # sessions don't overlap, so most cycles this is a single market.
+            open_codes = open_market_codes()
+            symbols = [s for s in all_symbols if market_for_symbol(s).code in open_codes]
+            if not symbols:
+                print("No watched symbols are in an open market this cycle.")
+                monitor.log_scheduler_success()
+                return
 
             recently_alerted = await self._get_recently_alerted()
 

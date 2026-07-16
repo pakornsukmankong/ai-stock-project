@@ -21,3 +21,8 @@ export function formatPrice(price: number): string {
     currency: "USD",
   }).format(price);
 }
+
+/** Currency symbol for a ticker, by exchange suffix (.BK = Thai baht). */
+export function currencySymbolForSymbol(symbol: string): string {
+  return symbol?.toUpperCase().endsWith(".BK") ? "฿" : "$";
+}

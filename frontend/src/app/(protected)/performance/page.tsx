@@ -4,7 +4,7 @@ import { useEffect, useState, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 import { alertsApi, type PerformanceStats, type PerformanceAlert, type PaginationMeta } from "@/lib/api";
-import { formatDate } from "@/lib/utils";
+import { formatDate, currencySymbolForSymbol } from "@/lib/utils";
 import { Activity, TrendingUp, TrendingDown, Target, ChevronLeft, ChevronRight, Trash2 } from "lucide-react";
 import { useToast } from "@/components/toast";
 
@@ -229,7 +229,9 @@ function PerformanceRow({ alert }: { alert: PerformanceAlert }) {
       </div>
       <div className="col-span-2">
         <span className="font-mono text-xs text-muted-foreground">
-          {alert.alert_price ? `$${alert.alert_price.toFixed(2)}` : "—"}
+          {alert.alert_price
+            ? `${currencySymbolForSymbol(alert.stock_symbol)}${alert.alert_price.toFixed(2)}`
+            : "—"}
         </span>
       </div>
       <div className="col-span-2">
