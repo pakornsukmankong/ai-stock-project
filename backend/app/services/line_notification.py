@@ -2,6 +2,7 @@ import asyncio
 from typing import Optional
 from app.core.config import get_settings
 from app.core.http_client import get_http_client
+from app.services.markets import market_for_symbol, market_local_time
 from app.schemas.stock import AIAnalysisResult
 
 
@@ -187,17 +188,21 @@ class LineNotificationService:
         """Format a single-signal alert message."""
         reasons_text = "\n".join(f"• {reason}" for reason in analysis.reasons)
         action_emoji = {"BUY": "🚀", "SELL": "🔴", "HOLD": "⏸️"}.get(analysis.action, "📊")
+        # Currency + timestamp follow the stock's own exchange (US → $/ET,
+        # Thai .BK → ฿/ICT), not a hardcoded US assumption.
+        market = market_for_symbol(analysis.symbol)
 
         return (
             f"{action_emoji} {analysis.action} SIGNAL: {analysis.symbol}\n"
             f"━━━━━━━━━━━━━━━\n"
-            f"💰 Price: ${price:.2f}\n"
+            f"💰 Price: {market.currency_symbol}{price:.2f}\n"
             f"📊 Confidence: {analysis.confidence}\n"
             f"🎯 Action: {analysis.action}\n"
             f"━━━━━━━━━━━━━━━\n"
             f"📋 Reasons:\n{reasons_text}\n"
             f"━━━━━━━━━━━━━━━\n"
-            f"💡 {analysis.summary[:200]}"
+            f"💡 {analysis.summary[:200]}\n"
+            f"🕐 {market_local_time(market)}"
         )
 
     def format_digest(self, items: list[dict]) -> str:
@@ -217,10 +222,18 @@ class LineNotificationService:
         for it in items:
             analysis: AIAnalysisResult = it["analysis"]
             price = it["price"]
-            lines.append(f"📈 {analysis.symbol}  ${price:.2f}  ·  {analysis.confidence}")
+            market = market_for_symbol(analysis.symbol)
+            lines.append(
+                f"📈 {analysis.symbol}  {market.currency_symbol}{price:.2f}  ·  {analysis.confidence}"
+            )
             lines.append(f"💡 {analysis.summary[:160]}")
             for reason in analysis.reasons[:3]:
                 lines.append(f"• {reason}")
             lines.append("")  # blank line between stocks
+
+        # A cycle only bundles symbols from open exchanges, and US/SET don't
+        # overlap — so one timestamp in the batch's market is accurate.
+        footer_market = market_for_symbol(items[0]["analysis"].symbol)
+        lines.append(f"🕐 {market_local_time(footer_market)}")
 
         return "\n".join(lines).rstrip()
