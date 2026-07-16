@@ -3,6 +3,8 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional
 import json
 from app.core.config import get_settings
+from app.core.error_monitor import monitor
+from app.services.ai_health import build_chat_request
 from app.core.database import get_supabase_client, db
 from app.schemas.stock import StockSignalSummary, AIAnalysisResult
 
@@ -118,13 +120,13 @@ Respond ONLY with the JSON object, no other text."""
             user_message = self._build_indicator_message(summary)
 
             response = await self.client.chat.completions.create(
-                model=self.settings.openai_model,
-                messages=[
-                    {"role": "system", "content": self.SYSTEM_PROMPT},
-                    {"role": "user", "content": user_message},
-                ],
-                max_tokens=500,
-                temperature=0.2,
+                **build_chat_request(
+                    [
+                        {"role": "system", "content": self.SYSTEM_PROMPT},
+                        {"role": "user", "content": user_message},
+                    ],
+                    500,
+                )
             )
 
             ai_text = response.choices[0].message.content or ""
@@ -134,6 +136,9 @@ Respond ONLY with the JSON object, no other text."""
             return parsed
 
         except Exception as e:
+            # Report it: a failing AI call silently suppresses every alert, so
+            # this must surface in /health rather than only in stdout.
+            monitor.log_error("ai_analysis", f"OpenAI call failed for {summary.symbol}: {e}")
             print(f"Error calling OpenAI for {summary.symbol}: {e}")
             return None
 

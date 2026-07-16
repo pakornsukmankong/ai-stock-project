@@ -1,5 +1,6 @@
 from pydantic_settings import BaseSettings
 from functools import lru_cache
+from typing import Optional
 
 
 class Settings(BaseSettings):
@@ -18,6 +19,10 @@ class Settings(BaseSettings):
     # Overridable via OPENAI_MODEL so the model can be swapped without a code
     # change. Default: GPT-5.6 Luna (fast, low-cost, high-volume tier).
     openai_model: str = "gpt-5.6-luna"
+    # Sampling temperature. GPT-5-family models accept ONLY the default (1) and
+    # reject an explicit non-default value with a 400, so it is omitted from the
+    # request unless set here. Set e.g. 0.2 only on models that support it.
+    openai_temperature: Optional[float] = None
 
     # LINE Messaging API
     line_channel_access_token: str = ""
