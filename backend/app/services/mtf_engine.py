@@ -1,3 +1,4 @@
+import logging
 """Multi-Timeframe (MTF) Analysis Engine.
 
 Analyzes stocks across multiple timeframes to confirm signals:
@@ -16,6 +17,8 @@ from typing import Optional
 
 from app.services.indicator_engine import IndicatorEngine, IndicatorResult
 from app.services.market_data import MarketDataService
+
+logger = logging.getLogger(__name__)
 
 
 # Yahoo Finance interval/period constraints:
@@ -133,7 +136,7 @@ class MTFEngine:
                 df = self._resample_to_4h(df)
             return self._analyze_df(timeframe, df)
         except Exception as e:
-            print(f"MTF error for {symbol} [{timeframe}]: {e}")
+            logger.error(f"MTF error for {symbol} [{timeframe}]: {e}")
             return TimeframeAnalysis(timeframe=timeframe)
 
     def _analyze_df(self, timeframe: str, df) -> TimeframeAnalysis:
@@ -161,7 +164,7 @@ class MTFEngine:
             analysis = self._build_from_indicators(timeframe, indicators)
 
         except Exception as e:
-            print(f"MTF error [{timeframe}]: {e}")
+            logger.error(f"MTF error [{timeframe}]: {e}")
 
         return analysis
 
@@ -278,7 +281,7 @@ class MTFEngine:
             return result
 
         except Exception as e:
-            print(f"Error in relaxed indicator calculation: {e}")
+            logger.error(f"Error in relaxed indicator calculation: {e}")
             return None
 
     def _classify_trend(self, indicators: IndicatorResult) -> str:

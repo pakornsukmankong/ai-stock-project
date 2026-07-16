@@ -1,5 +1,9 @@
 FROM python:3.12-slim
 
+# Unbuffered stdout: otherwise Python block-buffers it when not a TTY, so log
+# lines surface late and out of order relative to stderr (observed ~50s skew).
+ENV PYTHONUNBUFFERED=1
+
 WORKDIR /app
 
 COPY requirements.txt .

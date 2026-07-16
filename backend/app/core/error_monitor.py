@@ -5,14 +5,12 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 from app.core.config import get_settings
+from app.core.logging_config import configure_logging
 
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S",
-)
+# Routes by level: INFO/DEBUG -> stdout, WARNING+ -> stderr. basicConfig() put
+# everything on stderr, which log collectors read as "error".
+configure_logging()
 
 logger = logging.getLogger("ai-stock-alert")
 
