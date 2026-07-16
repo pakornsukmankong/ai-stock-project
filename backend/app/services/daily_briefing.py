@@ -7,7 +7,7 @@ from app.core.error_monitor import monitor
 from app.core.http_client import get_http_client
 from app.core.validation import is_valid_symbol
 from app.services.ai_health import build_chat_request
-from app.services.line_notification import LineNotificationService
+from app.services.line_notification import LineNotificationService, MAX_TEXT_LENGTH
 from app.services.markets import market_for_symbol, MARKETS, US_MARKET, Market
 
 # Covers a multi-stock briefing plus, on a reasoning model, the hidden reasoning
@@ -19,6 +19,17 @@ NO_STOCKS = "no stocks in this market"
 AI_FAILED = "AI briefing generation failed"
 PUSH_FAILED = "LINE delivery failed"
 
+# Character budget for the AI's body text. LINE caps a text message at
+# MAX_TEXT_LENGTH; anything longer is split into extra messages, and each one
+# costs another unit of the monthly quota. Reserve room for the header/watchlist
+# /footer that _format_briefing_message wraps around the body so the whole
+# briefing lands as ONE message.
+_FORMATTING_OVERHEAD = 400
+_BRIEFING_BODY_BUDGET = MAX_TEXT_LENGTH - _FORMATTING_OVERHEAD
+# Floor per stock, so a huge watchlist still asks for something writable rather
+# than an impossible 5-character line.
+_MIN_CHARS_PER_STOCK = 60
+
 
 class DailyBriefingService:
     """Sends a daily AI-powered news briefing to users before market open.
@@ -29,16 +40,20 @@ class DailyBriefingService:
     watchlist gets a Thai-timed briefing and a US watchlist a US-timed one.
     """
 
-    SYSTEM_PROMPT = """You are a concise stock news analyst.
-Given recent news headlines for stocks in a watchlist, provide a brief daily news briefing.
-You MUST cover ALL stocks listed — do not skip any.
-For each stock:
-- Summarize the most important news in 1-2 sentences
-- Give sentiment: 🟢 Bullish / 🟡 Neutral / 🔴 Bearish
-- Note any catalysts or risks
-- If no news available, state "No major news" and give a neutral outlook
+    SYSTEM_PROMPT = """You are a terse stock news analyst writing a phone push notification.
 
-Keep each stock to 2-3 lines max. Be direct and actionable."""
+Cover EVERY stock listed — never skip one.
+
+Output exactly ONE line per stock, in this shape:
+SYMBOL 🟢|🟡|🔴 most important point, plus any catalyst or risk
+
+Rules:
+- One line per stock. Nothing else: no title, no intro, no summary, no blank
+  lines, no markdown, no bullet characters.
+- 🟢 Bullish / 🟡 Neutral / 🔴 Bearish.
+- No news for a stock → "SYMBOL 🟡 No major news."
+- Cut filler words. Every line must earn its characters.
+- Obey the character limit in the user message exactly."""
 
     def __init__(self) -> None:
         self.settings = get_settings()
@@ -303,10 +318,20 @@ Keep each stock to 2-3 lines max. Be direct and actionable."""
                 for h in headlines:
                     news_text += f"  - {h}\n"
 
+            # Scale the ask to the watchlist: a fixed "keep it short" produced a
+            # 6.7k-char briefing for 18 stocks, which LINE splits into a second
+            # (quota-costing) message.
+            stock_count = max(len(all_news), 1)
+            per_stock = max(_MIN_CHARS_PER_STOCK, _BRIEFING_BODY_BUDGET // stock_count)
+
             user_message = (
-                f"Today's news for my watchlist:\n"
+                f"Today's news for my watchlist ({stock_count} stocks):\n"
                 f"{news_text}\n"
-                "Provide a daily pre-market news briefing with sentiment for each stock."
+                f"Write the pre-market briefing: one line per stock, all "
+                f"{stock_count} stocks.\n"
+                f"HARD LIMIT: under {_BRIEFING_BODY_BUDGET} characters in total, "
+                f"so at most ~{per_stock} characters per stock. Staying under the "
+                f"limit matters more than detail."
             )
 
             response = await self.client.chat.completions.create(
