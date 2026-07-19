@@ -258,6 +258,11 @@ Rules:
         is_sent = await self.line_service._send_push_message(line_user_id, message)
 
         if is_sent:
+            kind = "manual " if manual else ""
+            logger.info(
+                f"[LINE] Sent {kind}{market.code} briefing to {user_id}: "
+                f"{len(symbols)} stock(s)"
+            )
             try:
                 await db(
                     self.supabase.table("alerts").insert({
