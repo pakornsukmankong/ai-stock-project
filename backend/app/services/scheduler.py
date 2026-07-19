@@ -229,20 +229,26 @@ class AnalysisScheduler:
 
             # Step 5: Edge-trigger gate. Only continue when the signal NEWLY turns
             # active (was inactive last cycle). A setup that stays >= threshold for
-            # hours/days should alert once, not every cycle. Updating state here
-            # (not on earlier early-returns) leaves it unchanged when data is
-            # missing, so a fetch hiccup doesn't fabricate a fresh edge.
+            # hours/days should alert once, not every cycle.
             settings = get_settings()
             was_active = self._signal_active.get(symbol, False)
             now_active = signal.is_buy_signal
-            self._signal_active[symbol] = now_active
 
             if not now_active:
-                return  # no buy signal — stop (no AI call)
+                # Inactive now: reset so a future activation counts as a fresh
+                # edge. (Left unchanged on the earlier data-missing early-returns,
+                # so a fetch hiccup can't fabricate an edge.)
+                self._signal_active[symbol] = False
+                return
             if settings.alert_edge_trigger and was_active:
                 # Still active from a previous cycle — not a new event.
                 print(f"  {symbol}: signal still active (no new edge) — skipping")
                 return
+
+            # NOTE: the edge is marked consumed (state -> True) only AFTER the AI
+            # responds, further down. Marking it here would burn the edge even
+            # when the AI call fails, so an outage would silently swallow every
+            # signal and leave it stuck as "still active" until it re-arms.
 
             # Determine which score to display
             display_score = signal.mtf_adjusted_score if mtf_result else signal.total_score
@@ -303,7 +309,14 @@ class AnalysisScheduler:
             # Step 7: AI analysis (with cache)
             analysis = await self.ai_service.analyze(signal_summary)
             if analysis is None:
+                # AI failed — do NOT consume the edge, so the next cycle retries
+                # this signal instead of it being swallowed as "still active".
                 return
+
+            # AI reached a decision (BUY or HOLD). Consume the edge now so we
+            # don't re-ask every cycle while the setup persists — the whole point
+            # of edge-triggering.
+            self._signal_active[symbol] = True
 
             # Only notify if AI says BUY (not HOLD or SELL)
             if analysis.action != "BUY":
