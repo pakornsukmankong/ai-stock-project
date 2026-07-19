@@ -471,6 +471,10 @@ class AnalysisScheduler:
 
                 if status == SENT:
                     should_save = True
+                    symbols = ", ".join(item["symbol"] for item in items)
+                    logger.info(
+                        f"[LINE] Sent alert to {user_id}: {len(items)} signal(s) ({symbols})"
+                    )
                 elif status == MONTHLY_LIMIT:
                     # Quota ran out mid-batch — fall back to DB for this and the rest.
                     monthly_limit_hit = True
