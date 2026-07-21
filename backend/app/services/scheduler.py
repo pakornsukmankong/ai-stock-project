@@ -412,18 +412,37 @@ class AnalysisScheduler:
 
         Purely in-memory: the watcher list and the cooldown set are both fetched
         once per cycle by the caller.
+
+        Every path that drops a signal logs why: an AI-approved BUY that reaches
+        nobody is the single most confusing outcome to debug from the outside.
         """
+        if not watchers:
+            logger.info(
+                f"  {symbol}: BUY approved but no watcher has LINE connected — not sent"
+            )
+            return
+
         for watcher in watchers:
             user_id = watcher["user_id"]
 
             # Skip if the user was already alerted for this stock within the
-            # cooldown window (ALERT_COOLDOWN_HOURS).
+            # cooldown window (ALERT_COOLDOWN_HOURS). Logged: an AI-approved BUY
+            # dropped here is otherwise invisible, which reads as "the system
+            # didn't notify me" with nothing in the logs to explain it.
             if (user_id, symbol) in recently_alerted:
+                logger.info(
+                    f"  {symbol}: {user_id} already alerted within the last "
+                    f"{get_settings().alert_cooldown_hours}h — skipping"
+                )
                 continue
 
             if not self._meets_confidence_preference(
                 analysis.confidence, watcher["min_confidence"]
             ):
+                logger.info(
+                    f"  {symbol}: confidence {analysis.confidence} below "
+                    f"{user_id}'s minimum ({watcher['min_confidence']}) — skipping"
+                )
                 continue
 
             bucket = pending.setdefault(
