@@ -20,6 +20,14 @@ from app.core.error_monitor import monitor
 
 logger = logging.getLogger(__name__)
 
+# APScheduler defaults misfire_grace_time to 1 second: a job whose start slips
+# past that — a deploy, a restart, a busy event loop — is dropped silently. For
+# a once-a-day cron that means losing the whole day's run. An hour of grace lets
+# a brief hiccup recover; the daily jobs are all idempotent (the briefing has its
+# own "already sent today" guard), so a late run is safe. Interval jobs keep the
+# tight default on purpose — the next tick is only minutes away.
+DAILY_MISFIRE_GRACE_SECONDS = 3600
+
 # At import, not in the lifespan: uvicorn configures its loggers in Config(),
 # then imports this module, and only *then* logs "Started server process" /
 # "Waiting for application startup." before handing over to the lifespan. Doing
@@ -78,6 +86,7 @@ async def lifespan(app: FastAPI):
                 args=[US_MARKET],
                 id="daily_briefing_us",
                 replace_existing=True,
+                misfire_grace_time=DAILY_MISFIRE_GRACE_SECONDS,
             )
             # SET: 9:00 AM ICT = 02:00 UTC (1h before the 10:00 ICT open; ICT has
             # no DST, so this is exact year-round).
@@ -90,17 +99,21 @@ async def lifespan(app: FastAPI):
                 args=[SET_MARKET],
                 id="daily_briefing_set",
                 replace_existing=True,
+                misfire_grace_time=DAILY_MISFIRE_GRACE_SECONDS,
             )
-            # Performance tracker: runs at 10:00 PM ET (02:00 UTC) every weekday
+            # Performance tracker: 02:15 UTC every weekday. Deliberately 15 min
+            # after the SET briefing — running both at 02:00 had them contend for
+            # the event loop and hammer Yahoo at the same instant.
             perf_tracker = PerformanceTracker()
             scheduler.add_job(
                 perf_tracker.update_performance,
                 "cron",
                 hour=2,
-                minute=0,
+                minute=15,
                 day_of_week="mon-fri",
                 id="performance_tracker",
                 replace_existing=True,
+                misfire_grace_time=DAILY_MISFIRE_GRACE_SECONDS,
             )
             scheduler.add_job(
                 _cleanup_rate_limiters,
