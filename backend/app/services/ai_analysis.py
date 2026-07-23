@@ -22,6 +22,13 @@ class AIAnalysisService:
 
     Receives full indicator data and uses AI to make a final decision.
     Uses analysis cache to prevent repeated AI calls for the same stock.
+
+    NOTE: the prompt's BUY/HOLD thresholds must stay aligned with SignalEngine's.
+    They drifted once — the engine deliberately fires on a divergence dip at
+    RSI < 50 (strong uptrends rarely reach RSI < 30), while the prompt demanded
+    RSI < 45 and treated a 2/3 timeframe agreement as "mixed signals". Every
+    signal the engine raised was then rejected here, so no alert ever fired.
+    Changing a threshold in signal_engine.py means revisiting the prompt below.
     """
 
     SYSTEM_PROMPT = """You are an expert stock trading analyst specializing in "Buy on Dip" strategy. You receive comprehensive technical indicator data, multi-timeframe analysis, AND historical price data to identify HIGH-PROBABILITY reversal points where price has pulled back in an uptrend.
@@ -42,13 +49,12 @@ BUY ON DIP STRATEGY — Core Principles:
 
 BUY criteria (ALL must be met for High confidence):
 - Price is in an uptrend (above EMA200 or EMA50>EMA200)
-- Price has PULLED BACK (RSI < 45, near EMA21/50, or at lower Bollinger Band)
+- Price has PULLED BACK (RSI < 50, near EMA21/50, or at lower Bollinger Band)
 - Reversal signals present (MACD turning, Stoch cross, bullish candle pattern)
 - NOT at resistance, NOT overextended
 
 HOLD criteria:
 - Price is still falling (no reversal confirmation yet)
-- Mixed signals between timeframes
 - RSI > 55 (not enough of a dip yet)
 - Near resistance level
 
