@@ -35,10 +35,14 @@ class AnalysisScheduler:
         self.mtf_engine = MTFEngine()
         self.ai_service = AIAnalysisService()
         self.line_service = LineNotificationService()
-        # Per-symbol signal state from the previous cycle, used for edge-trigger
-        # detection (symbol -> was the buy signal active last cycle). In-memory:
-        # resets on restart, where the cooldown bounds any re-alert burst.
+        # Log-noise control only (NOT gating). The AI is consulted for every
+        # active signal each cycle — its 30-min cache throttles cost and the 24h
+        # per-user+symbol cooldown throttles alerts. These dicts just avoid
+        # repeating the same line every 5 minutes while a persistent uptrend
+        # stays active: the rule-based "BUY SIGNAL" line is logged on the rising
+        # edge, and the "AI decision" line only when the verdict changes.
         self._signal_active: dict[str, bool] = {}
+        self._last_ai_action: dict[str, str] = {}
         # Guards against two cycles running at once (the interval job overlapping
         # a slow run, or a manual /analysis/trigger landing mid-cycle).
         self._cycle_lock = asyncio.Lock()
@@ -81,13 +85,16 @@ class AnalysisScheduler:
                 monitor.log_scheduler_success()
                 return
 
-            # Forget edge-trigger state for symbols no longer watched (so a
-            # re-added symbol gets a fresh edge). Keyed on ALL watched symbols,
-            # not just the ones analyzed this cycle, so a closed-market symbol
-            # keeps its state until its exchange opens again.
+            # Forget log-state for symbols no longer watched, so a re-added symbol
+            # logs its signal freshly. Keyed on ALL watched symbols (not just the
+            # ones analyzed this cycle), so a closed-market symbol keeps its state
+            # until its exchange opens again.
             active_set = set(all_symbols)
             self._signal_active = {
                 s: v for s, v in self._signal_active.items() if s in active_set
+            }
+            self._last_ai_action = {
+                s: v for s, v in self._last_ai_action.items() if s in active_set
             }
 
             # Analyze only symbols whose exchange is open right now. US and SET
@@ -227,34 +234,28 @@ class AnalysisScheduler:
             # Step 4: Run signal engine with MTF adjustment
             signal = self.signal_engine.evaluate_with_mtf(indicators, mtf_result)
 
-            # Step 5: Edge-trigger gate. Only continue when the signal NEWLY turns
-            # active (was inactive last cycle). A setup that stays >= threshold for
-            # hours/days should alert once, not every cycle.
-            settings = get_settings()
+            # Step 5: Rule-based gate. Stop if there's no buy signal (no AI call).
+            # There is NO edge-trigger gate here anymore: the previous version
+            # locked a persistently-active signal after a single AI HOLD, and a
+            # strong-uptrend symbol stays a "dip buy candidate" for days, so it
+            # was never re-evaluated and never alerted. Now every active signal is
+            # sent to the AI each cycle — cost is bounded by the analysis cache
+            # (~one real call per 30 min) and alert spam by the 24h cooldown.
             was_active = self._signal_active.get(symbol, False)
             now_active = signal.is_buy_signal
+            self._signal_active[symbol] = now_active
 
             if not now_active:
-                # Inactive now: reset so a future activation counts as a fresh
-                # edge. (Left unchanged on the earlier data-missing early-returns,
-                # so a fetch hiccup can't fabricate an edge.)
-                self._signal_active[symbol] = False
-                return
-            if settings.alert_edge_trigger and was_active:
-                # Still active from a previous cycle — not a new event.
-                print(f"  {symbol}: signal still active (no new edge) — skipping")
+                self._last_ai_action.pop(symbol, None)
                 return
 
-            # NOTE: the edge is marked consumed (state -> True) only AFTER the AI
-            # responds, further down. Marking it here would burn the edge even
-            # when the AI call fails, so an outage would silently swallow every
-            # signal and leave it stuck as "still active" until it re-arms.
-
-            # Determine which score to display
+            # Log the (long) rule-based line only on the rising edge, not every
+            # 5-minute cycle the signal stays active.
             display_score = signal.mtf_adjusted_score if mtf_result else signal.total_score
-            print(f"  BUY SIGNAL for {symbol} (score: {display_score}/100, "
-                  f"base: {signal.total_score}, MTF bonus: +{signal.mtf_bonus}, "
-                  f"penalty: -{signal.mtf_penalty}): {signal.reasons}")
+            if not was_active:
+                print(f"  BUY SIGNAL for {symbol} (score: {display_score}/100, "
+                      f"base: {signal.total_score}, MTF bonus: +{signal.mtf_bonus}, "
+                      f"penalty: -{signal.mtf_penalty}): {signal.reasons}")
 
             # Step 6: Build compact summary for AI (with MTF data)
             signal_summary = StockSignalSummary(
@@ -306,22 +307,24 @@ class AnalysisScheduler:
                 daily_candles=self._build_recent_daily_candles(df),
             )
 
-            # Step 7: AI analysis (with cache)
+            # Step 7: AI analysis (served from the 30-min cache when fresh).
             analysis = await self.ai_service.analyze(signal_summary)
             if analysis is None:
-                # AI failed — do NOT consume the edge, so the next cycle retries
-                # this signal instead of it being swallowed as "still active".
+                # AI failed — leave last_action untouched so the failure is
+                # retried next cycle rather than remembered as a verdict.
                 return
 
-            # AI reached a decision (BUY or HOLD). Consume the edge now so we
-            # don't re-ask every cycle while the setup persists — the whole point
-            # of edge-triggering.
-            self._signal_active[symbol] = True
-
-            # Only notify if AI says BUY (not HOLD or SELL)
+            # Only notify if AI says BUY (not HOLD or SELL). Log the verdict only
+            # when it changes, so a steady HOLD doesn't repeat every cycle.
             if analysis.action != "BUY":
-                print(f"  AI decision for {symbol}: {analysis.action} — skipping notification")
+                if self._last_ai_action.get(symbol) != analysis.action:
+                    print(f"  AI decision for {symbol}: {analysis.action} — skipping notification")
+                self._last_ai_action[symbol] = analysis.action
                 return
+
+            if self._last_ai_action.get(symbol) != "BUY":
+                print(f"  AI decision for {symbol}: BUY — queueing alert")
+            self._last_ai_action[symbol] = "BUY"
 
             # Step 8: Queue this signal for every user watching the stock
             # (sent as a digest at the end of the cycle).

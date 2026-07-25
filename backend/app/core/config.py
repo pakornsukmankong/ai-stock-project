@@ -45,14 +45,12 @@ class Settings(BaseSettings):
     app_env: str = "development"
     analysis_interval_minutes: int = 5
     cache_ttl_minutes: int = 30
-    # Minimum hours between alerts for the same user+symbol. A buy setup can
-    # stay valid for hours/days; without a long enough cooldown the same signal
-    # re-fires every cycle once the previous window expires.
+    # Minimum hours between alerts for the same user+symbol. This is the sole
+    # alert-frequency guard now that edge-triggering is gone: a buy setup stays
+    # valid for hours/days, so this stops the same signal re-alerting every
+    # cycle. The AI is still consulted each cycle (throttled by the analysis
+    # cache), so a HOLD that flips to BUY notifies as soon as the cooldown allows.
     alert_cooldown_hours: int = 24
-    # Edge-triggered alerting: only act when a symbol's signal NEWLY turns active
-    # (was inactive the previous cycle), not every cycle it stays active. The
-    # cooldown above remains a safety net against flapping/restart bursts.
-    alert_edge_trigger: bool = True
     # How long alerts are kept before the cleanup job deletes them.
     alerts_retention_days: int = 30
 
@@ -80,6 +78,10 @@ class Settings(BaseSettings):
 
     class Config:
         env_file = ".env"
+        # Tolerate env vars that no longer map to a field (e.g. a removed setting
+        # still present in a deployment's environment). Without this, deleting a
+        # config field would make the app fail to boot anywhere the old var lingers.
+        extra = "ignore"
         case_sensitive = False
 
     @property

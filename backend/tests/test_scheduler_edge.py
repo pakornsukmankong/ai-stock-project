@@ -1,9 +1,9 @@
-"""Edge-trigger state management in _analyze_symbol.
+"""Signal → AI → alert flow in _analyze_symbol.
 
-The rule: a signal's "edge" (inactive -> active transition) is consumed only
-once the AI has actually reached a decision. If the AI call fails, the edge must
-survive so the next cycle retries — otherwise an AI outage silently swallows
-every buy signal and leaves it stuck as "still active".
+Edge-triggering was removed: a persistently-active signal used to be locked out
+after a single AI HOLD and never re-evaluated (strong-uptrend symbols stay a
+"dip buy candidate" for days). Now every active signal is sent to the AI each
+cycle; the analysis cache bounds cost and the 24h cooldown bounds alert spam.
 """
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -25,20 +25,6 @@ def _signal(is_buy=True):
     )
 
 
-def _build_scheduler(monkeypatch, *, analysis):
-    """A scheduler whose pipeline yields a buy signal and the given AI result."""
-    sch = AnalysisScheduler()
-
-    monkeypatch.setattr(sch.market_data, "fetch_ohlcv", AsyncMock(return_value=_FakeDF()))
-    monkeypatch.setattr(sch.indicator_engine, "calculate", lambda df: _INDICATORS)
-    monkeypatch.setattr(sch.mtf_engine, "analyze", AsyncMock(return_value=None))
-    monkeypatch.setattr(sch.signal_engine, "evaluate_with_mtf", lambda i, m: _signal(True))
-    monkeypatch.setattr(sch, "_build_weekly_candles", lambda df: [])
-    monkeypatch.setattr(sch, "_build_recent_daily_candles", lambda df: [])
-    monkeypatch.setattr(sch.ai_service, "analyze", AsyncMock(return_value=analysis))
-    return sch
-
-
 class _FakeDF:
     empty = False
 
@@ -55,60 +41,91 @@ _INDICATORS = SimpleNamespace(
 )
 
 
-@pytest.mark.asyncio
-async def test_ai_failure_does_not_consume_the_edge(monkeypatch):
-    sch = _build_scheduler(monkeypatch, analysis=None)  # AI down
-    pending = {}
+def _build_scheduler(monkeypatch, *, analysis, is_buy=True):
+    sch = AnalysisScheduler()
+    monkeypatch.setattr(sch.market_data, "fetch_ohlcv", AsyncMock(return_value=_FakeDF()))
+    monkeypatch.setattr(sch.indicator_engine, "calculate", lambda df: _INDICATORS)
+    monkeypatch.setattr(sch.mtf_engine, "analyze", AsyncMock(return_value=None))
+    monkeypatch.setattr(sch.signal_engine, "evaluate_with_mtf", lambda i, m: _signal(is_buy))
+    monkeypatch.setattr(sch, "_build_weekly_candles", lambda df: [])
+    monkeypatch.setattr(sch, "_build_recent_daily_candles", lambda df: [])
+    monkeypatch.setattr(sch.ai_service, "analyze", AsyncMock(return_value=analysis))
+    return sch
 
-    await sch._analyze_symbol("AMZN", pending, {"AMZN": []}, set())
 
-    # Edge preserved -> next cycle still sees a fresh edge and retries.
-    assert sch._signal_active.get("AMZN") is not True
-    assert pending == {}
-
-
-@pytest.mark.asyncio
-async def test_ai_hold_consumes_the_edge_without_notifying(monkeypatch):
-    hold = SimpleNamespace(action="HOLD", confidence="Low", summary="", reasons=[])
-    sch = _build_scheduler(monkeypatch, analysis=hold)
-    pending = {}
-
-    await sch._analyze_symbol("AMZN", pending, {"AMZN": []}, set())
-
-    # A decision was reached, so don't re-ask every cycle — but no alert.
-    assert sch._signal_active["AMZN"] is True
-    assert pending == {}
+_WATCHERS = {"AMZN": [{"user_id": "u1", "line_user_id": "U1", "min_confidence": "All"}]}
 
 
 @pytest.mark.asyncio
-async def test_ai_buy_consumes_edge_and_queues_alert(monkeypatch):
+async def test_ai_buy_queues_alert(monkeypatch):
     buy = SimpleNamespace(action="BUY", confidence="High", summary="dip", reasons=["x"])
     sch = _build_scheduler(monkeypatch, analysis=buy)
-    watchers = {"AMZN": [{"user_id": "u1", "line_user_id": "U1", "min_confidence": "All"}]}
     pending = {}
 
-    await sch._analyze_symbol("AMZN", pending, watchers, set())
+    await sch._analyze_symbol("AMZN", pending, _WATCHERS, set())
 
-    assert sch._signal_active["AMZN"] is True
     assert "u1" in pending
     assert pending["u1"]["items"][0]["symbol"] == "AMZN"
 
 
 @pytest.mark.asyncio
-async def test_edge_retried_next_cycle_after_ai_recovers(monkeypatch):
-    """Reproduces the outage: fail, then succeed on the retry."""
-    sch = _build_scheduler(monkeypatch, analysis=None)
-    watchers = {"AMZN": [{"user_id": "u1", "line_user_id": "U1", "min_confidence": "All"}]}
+async def test_ai_hold_does_not_alert(monkeypatch):
+    hold = SimpleNamespace(action="HOLD", confidence="Low", summary="", reasons=[])
+    sch = _build_scheduler(monkeypatch, analysis=hold)
+    pending = {}
 
-    # Cycle 1: AI down -> edge not consumed, nothing queued.
-    await sch._analyze_symbol("AMZN", {}, watchers, set())
-    assert sch._signal_active.get("AMZN") is not True
+    await sch._analyze_symbol("AMZN", pending, _WATCHERS, set())
+    assert pending == {}
 
-    # Cycle 2: AI recovers -> the still-active signal alerts.
+
+@pytest.mark.asyncio
+async def test_persistent_hold_is_re_evaluated_every_cycle(monkeypatch):
+    """The core fix: a still-active signal is NOT locked out after one HOLD."""
+    hold = SimpleNamespace(action="HOLD", confidence="Low", summary="", reasons=[])
+    sch = _build_scheduler(monkeypatch, analysis=hold)
+
+    # Three consecutive cycles, signal stays active the whole time.
+    for _ in range(3):
+        await sch._analyze_symbol("AMZN", {}, _WATCHERS, set())
+
+    # The AI was consulted every cycle (old code would have skipped after #1).
+    assert sch.ai_service.analyze.await_count == 3
+
+
+@pytest.mark.asyncio
+async def test_hold_flips_to_buy_and_alerts(monkeypatch):
+    """A symbol the AI held earlier still alerts once its verdict turns BUY."""
+    hold = SimpleNamespace(action="HOLD", confidence="Low", summary="", reasons=[])
+    sch = _build_scheduler(monkeypatch, analysis=hold)
+
+    await sch._analyze_symbol("AMZN", {}, _WATCHERS, set())  # HOLD, no alert
+
     buy = SimpleNamespace(action="BUY", confidence="High", summary="dip", reasons=["x"])
     sch.ai_service.analyze = AsyncMock(return_value=buy)
     pending = {}
-    await sch._analyze_symbol("AMZN", pending, watchers, set())
+    await sch._analyze_symbol("AMZN", pending, _WATCHERS, set())
 
-    assert sch._signal_active["AMZN"] is True
-    assert "u1" in pending
+    assert "u1" in pending  # not locked out — alerts on the flip
+
+
+@pytest.mark.asyncio
+async def test_cooldown_blocks_repeat_alert(monkeypatch):
+    """With edge-trigger gone, the 24h cooldown is what prevents re-alerting."""
+    buy = SimpleNamespace(action="BUY", confidence="High", summary="dip", reasons=["x"])
+    sch = _build_scheduler(monkeypatch, analysis=buy)
+    pending = {}
+
+    # This user+symbol already alerted within the cooldown window.
+    await sch._analyze_symbol("AMZN", pending, _WATCHERS, {("u1", "AMZN")})
+    assert pending == {}
+
+
+@pytest.mark.asyncio
+async def test_ai_failure_does_not_alert_and_is_retried(monkeypatch):
+    sch = _build_scheduler(monkeypatch, analysis=None)  # AI down
+    pending = {}
+
+    await sch._analyze_symbol("AMZN", pending, _WATCHERS, set())
+    assert pending == {}
+    # No verdict remembered, so the next cycle re-asks rather than caching a miss.
+    assert "AMZN" not in sch._last_ai_action
