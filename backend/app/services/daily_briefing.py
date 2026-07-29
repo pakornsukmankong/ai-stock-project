@@ -2,6 +2,7 @@ import logging
 from datetime import datetime, timezone
 from typing import Optional, Tuple
 from openai import AsyncOpenAI
+from app.core.logging_config import local_now
 from app.core.config import get_settings
 from app.core.database import get_supabase_client, db
 from app.core.error_monitor import monitor
@@ -69,7 +70,7 @@ Rules:
 
     async def send_daily_briefings(self, market: Market = US_MARKET) -> None:
         """Send the pre-open news briefing for one market to eligible users."""
-        print(f"[{datetime.now(timezone.utc)}] Starting {market.code} daily news briefing...")
+        print(f"[{local_now():%Y-%m-%d %H:%M:%S %Z}] Starting {market.code} daily news briefing...")
 
         # Check if this market's briefing already went out today (its local day).
         if await self._already_sent_today(market):
@@ -88,7 +89,7 @@ Rules:
                 if delivered:
                     sent += 1
 
-            print(f"[{datetime.now(timezone.utc)}] {market.code} daily briefing complete. Sent to {sent} users.")
+            print(f"[{local_now():%Y-%m-%d %H:%M:%S %Z}] {market.code} daily briefing complete. Sent to {sent} users.")
 
         except Exception as e:
             logger.error(f"Error sending {market.code} daily briefings: {e}")

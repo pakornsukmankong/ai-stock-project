@@ -2,6 +2,7 @@ import logging
 import asyncio
 from datetime import datetime, timezone, timedelta
 from functools import lru_cache
+from app.core.logging_config import local_now
 from app.core.config import get_settings
 from app.core.database import get_supabase_client, db
 from app.core.error_monitor import monitor
@@ -62,18 +63,18 @@ class AnalysisScheduler:
         # the currently-open exchange(s) inside the cycle, so a Thai stock is
         # analyzed during SET hours and a US stock during US hours.
         if not any_market_open():
-            print(f"[{datetime.now(timezone.utc)}] All markets closed. Skipping analysis.")
+            print(f"[{local_now():%Y-%m-%d %H:%M:%S %Z}] All markets closed. Skipping analysis.")
             return
 
         if self._cycle_lock.locked():
-            print(f"[{datetime.now(timezone.utc)}] Analysis cycle already running. Skipping.")
+            print(f"[{local_now():%Y-%m-%d %H:%M:%S %Z}] Analysis cycle already running. Skipping.")
             return
 
         async with self._cycle_lock:
             await self._run_cycle()
 
     async def _run_cycle(self) -> None:
-        print(f"[{datetime.now(timezone.utc)}] Starting analysis cycle...")
+        print(f"[{local_now():%Y-%m-%d %H:%M:%S %Z}] Starting analysis cycle...")
 
         try:
             # One query up-front for the whole watcher graph, instead of one query
@@ -129,7 +130,7 @@ class AnalysisScheduler:
 
             await self._dispatch_notifications(pending)
 
-            print(f"[{datetime.now(timezone.utc)}] Analysis cycle complete.")
+            print(f"[{local_now():%Y-%m-%d %H:%M:%S %Z}] Analysis cycle complete.")
             monitor.log_scheduler_success()
 
         except Exception as e:
