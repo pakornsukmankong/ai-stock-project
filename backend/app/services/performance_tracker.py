@@ -3,6 +3,7 @@ import asyncio
 import pandas as pd
 from datetime import datetime, timezone, timedelta
 from typing import Optional
+from app.core.logging_config import local_now
 from app.core.config import get_settings
 from app.core.database import get_supabase_client, db
 from app.services.market_data import MarketDataService
@@ -28,7 +29,7 @@ class PerformanceTracker:
 
     async def update_performance(self) -> None:
         """Update performance data for all pending alerts."""
-        print(f"[{datetime.now(timezone.utc)}] Starting performance tracking...")
+        print(f"[{local_now():%Y-%m-%d %H:%M:%S %Z}] Starting performance tracking...")
 
         try:
             # Get all BUY alerts with alert_price that still need tracking
@@ -114,7 +115,7 @@ class PerformanceTracker:
                     )
                     updated_count += 1
 
-            print(f"[{datetime.now(timezone.utc)}] Performance tracking complete. Updated {updated_count} alerts.")
+            print(f"[{local_now():%Y-%m-%d %H:%M:%S %Z}] Performance tracking complete. Updated {updated_count} alerts.")
 
         except Exception as e:
             logger.error(f"Error in performance tracking: {e}")

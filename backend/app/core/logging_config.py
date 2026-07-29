@@ -10,12 +10,35 @@ above to stderr.
 """
 import logging
 import sys
+from datetime import datetime
+
+import pytz
+
+# Every log timestamp renders in this timezone. Business logic (APScheduler,
+# market hours, DB cutoffs) still runs in UTC — only the *displayed* timestamp
+# changes, so logs read in local time without a constant +7 conversion. Change
+# this one constant to relocate all log timestamps.
+LOG_TZ = pytz.timezone("Asia/Bangkok")
 
 _FORMAT = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
-_DATEFMT = "%Y-%m-%d %H:%M:%S"
+# %Z renders the offset (e.g. "+07") so the timezone is never ambiguous.
+_DATEFMT = "%Y-%m-%d %H:%M:%S %Z"
 
 # Uvicorn owns these and points them at stderr with propagate=False.
 _UVICORN_LOGGERS = ("uvicorn", "uvicorn.error", "uvicorn.access")
+
+
+def local_now() -> datetime:
+    """Timezone-aware 'now' in LOG_TZ, for print() lines that embed a timestamp."""
+    return datetime.now(LOG_TZ)
+
+
+class _LocalTimeFormatter(logging.Formatter):
+    """Render %(asctime)s in LOG_TZ instead of the host's (UTC) local time."""
+
+    def formatTime(self, record: logging.LogRecord, datefmt=None) -> str:
+        dt = datetime.fromtimestamp(record.created, LOG_TZ)
+        return dt.strftime(datefmt or "%Y-%m-%d %H:%M:%S")
 
 
 class _BelowWarningFilter(logging.Filter):
@@ -27,7 +50,7 @@ class _BelowWarningFilter(logging.Filter):
 
 def configure_logging(level: int = logging.INFO) -> None:
     """Route records to stdout/stderr by level. Replaces basicConfig()."""
-    formatter = logging.Formatter(_FORMAT, datefmt=_DATEFMT)
+    formatter = _LocalTimeFormatter(_FORMAT, datefmt=_DATEFMT)
 
     stdout_handler = logging.StreamHandler(sys.stdout)
     stdout_handler.setLevel(level)
