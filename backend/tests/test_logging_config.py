@@ -48,6 +48,21 @@ def test_configure_is_idempotent():
     assert sys.stdout in streams and sys.stderr in streams
 
 
+def test_noisy_loggers_are_quieted_to_warning():
+    # httpx/apscheduler log one INFO line per HTTP request / job — pure noise
+    # that buries our own signal. They must be raised to WARNING, but still
+    # surface real failures.
+    for name in ("httpx", "httpcore", "apscheduler.executors.default"):
+        logging.getLogger(name).setLevel(logging.INFO)
+
+    configure_logging()
+
+    for name in ("httpx", "httpcore", "apscheduler.executors.default"):
+        lg = logging.getLogger(name)
+        assert lg.getEffectiveLevel() == logging.WARNING
+        assert lg.isEnabledFor(logging.WARNING)  # failures still get through
+
+
 def test_adopt_uvicorn_loggers_hands_them_to_root():
     # Uvicorn ships its own stderr handlers with propagate=False, so its INFO
     # lines are tagged as errors until they are routed through root.

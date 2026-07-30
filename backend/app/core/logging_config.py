@@ -27,6 +27,14 @@ _DATEFMT = "%Y-%m-%d %H:%M:%S %Z"
 # Uvicorn owns these and points them at stderr with propagate=False.
 _UVICORN_LOGGERS = ("uvicorn", "uvicorn.error", "uvicorn.access")
 
+# Libraries that log one INFO line per operation, drowning our own signal.
+# httpx logs every HTTP request ("GET .../chart/NVDA 200 OK") — ~50 lines per
+# analysis cycle across Yahoo + Supabase calls. apscheduler logs every job as it
+# runs and finishes. None of it is actionable at INFO; raise to WARNING so only
+# genuine problems (a failed request, a missed job) still appear. Our own
+# "Starting analysis cycle" / "BUY SIGNAL" / "[LINE] Sent" lines are untouched.
+_NOISY_LOGGERS = ("httpx", "httpcore", "apscheduler.executors.default", "apscheduler.scheduler")
+
 
 def local_now() -> datetime:
     """Timezone-aware 'now' in LOG_TZ, for print() lines that embed a timestamp."""
@@ -66,6 +74,10 @@ def configure_logging(level: int = logging.INFO) -> None:
     # Replace rather than append: basicConfig or a re-run would otherwise leave
     # a stderr handler behind and every line would still be duplicated as error.
     root.handlers = [stdout_handler, stderr_handler]
+
+    # Silence the per-request / per-job chatter, keeping their warnings+errors.
+    for name in _NOISY_LOGGERS:
+        logging.getLogger(name).setLevel(logging.WARNING)
 
 
 def adopt_uvicorn_loggers() -> None:
