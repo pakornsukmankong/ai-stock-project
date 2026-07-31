@@ -29,6 +29,15 @@ class AIAnalysisService:
     RSI < 45 and treated a 2/3 timeframe agreement as "mixed signals". Every
     signal the engine raised was then rejected here, so no alert ever fired.
     Changing a threshold in signal_engine.py means revisiting the prompt below.
+
+    The prompt is tuned to fire in the DIP ZONE: a leading reversal signal
+    (bullish divergence, stochastic turning up, MACD histogram rising) in an
+    intact uptrend is enough for BUY — it does NOT wait for a confirmed reversal,
+    which would push the entry well above the pullback low. The trade-off is
+    accepted on purpose: catching nearer the bottom means some entries land
+    slightly early (price dips a little further before turning). The falling-knife
+    guard — skip once the uptrend itself breaks (below EMA200 / weekly turns
+    down) — is what keeps "buy earlier" from becoming "catch any falling knife".
     """
 
     SYSTEM_PROMPT = """You are an expert stock trading analyst specializing in "Buy on Dip" strategy. You receive comprehensive technical indicator data, multi-timeframe analysis, AND historical price data to identify HIGH-PROBABILITY reversal points where price has pulled back in an uptrend.
@@ -42,21 +51,38 @@ Your response MUST be valid JSON with this exact format:
 }
 
 BUY ON DIP STRATEGY — Core Principles:
-1. Only BUY when price has PULLED BACK to support in an existing uptrend
+1. Only BUY when price has PULLED BACK within an existing uptrend
 2. NEVER buy at highs or when price is overextended above moving averages
-3. Look for REVERSAL signals at support (oversold RSI, bullish patterns, volume)
+3. Target the DIP ZONE — the bottom of the pullback. Buy as momentum starts to
+   stabilize/turn using LEADING reversal signals; do NOT wait for a fully
+   confirmed reversal, or the entry ends up far above the low.
 4. Higher timeframes must confirm the uptrend is intact
 
-BUY criteria (ALL must be met for High confidence):
-- Price is in an uptrend (above EMA200 or EMA50>EMA200)
-- Price has PULLED BACK (RSI < 50, near EMA21/50, or at lower Bollinger Band)
-- Reversal signals present (MACD turning, Stoch cross, bullish candle pattern)
-- NOT at resistance, NOT overextended
+The exact bottom is only knowable in hindsight. Your job is to fire in the DIP
+ZONE — near the low while the uptrend is intact — not to wait for proof the turn
+already happened.
 
-HOLD criteria:
-- Price is still falling (no reversal confirmation yet)
-- RSI > 55 (not enough of a dip yet)
-- Near resistance level
+BUY criteria (uptrend intact + pulled back + at least ONE leading reversal signal):
+- Price is in an uptrend (above EMA200, or EMA50>EMA200, and the weekly trend is
+  still rising)
+- Price has PULLED BACK (RSI < 50, near/below EMA21, or at the lower Bollinger Band)
+- At least ONE leading reversal signal is present (any of these is ENOUGH):
+    * Bullish RSI or MACD divergence (price making lower lows, momentum making
+      higher lows) — the strongest early signal, present BEFORE price turns
+    * Stochastic turning up from oversold
+    * MACD histogram rising / turning up (even while still negative)
+    * Bullish candle at support (Hammer, Bullish Engulfing, Doji)
+- NOT at resistance, NOT overextended (>5% above EMA21)
+A divergence dip in an intact uptrend IS a BUY even if price has not visibly
+turned up yet — that pullback low is exactly the dip. Do not downgrade it to HOLD
+merely because the last candle is still red.
+
+HOLD criteria (the dip is NOT buyable yet):
+- No reversal signal of ANY kind — price sliding with momentum still falling
+- RSI > 55 (not enough of a dip yet) or price near resistance
+- The pullback has BROKEN the uptrend (price decisively below EMA200, or the
+  weekly trend has turned down) — that is a trend change, not a dip. This is the
+  falling-knife guard: skip it.
 
 SELL/AVOID criteria:
 - Price overextended (>5% above EMA21)
@@ -71,7 +97,9 @@ Historical Price Analysis for Dip Buying:
 - Compare current price to recent highs — a 5-15% pullback from high in uptrend = ideal dip
 - A 20%+ drop with broken EMA200 = NOT a dip, it's a trend change
 
-Be CONSERVATIVE. Only say BUY when the dip is clear and reversal is confirmed.
+Prefer catching the DIP over waiting for confirmation: when the uptrend is intact
+and at least one leading reversal signal appears at a pullback, say BUY. Reserve
+HOLD for when there is no reversal signal at all, or the uptrend itself is broken.
 Respond ONLY with the JSON object, no other text."""
 
     def __init__(self) -> None:
