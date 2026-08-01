@@ -141,6 +141,23 @@ export default function SettingsPage() {
     }
   }
 
+  // Optimistically flip a signal-type toggle, reverting if the API call fails.
+  async function handleToggleChannel(
+    channel: "notify_buy" | "notify_sell",
+    value: boolean,
+  ) {
+    setProfile((prev) => (prev ? { ...prev, [channel]: value } : prev));
+    try {
+      await userApi.updateSignalChannels({ [channel]: value });
+      success(
+        `${channel === "notify_buy" ? "Buy" : "Sell"} alerts ${value ? "enabled" : "disabled"}`,
+      );
+    } catch {
+      setProfile((prev) => (prev ? { ...prev, [channel]: !value } : prev));
+      toastError("Failed to update preference");
+    }
+  }
+
   const handleCopyCode = useCallback(() => {
     if (!linkCode) return;
     navigator.clipboard?.writeText(linkCode);
@@ -378,9 +395,29 @@ export default function SettingsPage() {
             <h2 className="font-mono text-sm font-semibold">Notification Preferences</h2>
           </div>
 
-          <p className="mb-4 font-mono text-xs text-muted-foreground">
-            Choose the minimum confidence level for receiving alerts.
-          </p>
+          {/* Signal types — which sides push to LINE */}
+          <div className="mb-5 space-y-2">
+            <p className="font-mono text-xs text-muted-foreground">
+              Choose which signals push to your LINE.
+            </p>
+            <Toggle
+              label="Buy signals"
+              description="Alert when a dip in an uptrend looks buyable."
+              checked={profile?.notify_buy ?? true}
+              onChange={(v) => handleToggleChannel("notify_buy", v)}
+            />
+            <Toggle
+              label="Sell signals"
+              description="Alert to take profit when a run-up starts turning down."
+              checked={profile?.notify_sell ?? false}
+              onChange={(v) => handleToggleChannel("notify_sell", v)}
+            />
+          </div>
+
+          <div className="border-t border-terminal-border/50 pt-4">
+            <p className="mb-4 font-mono text-xs text-muted-foreground">
+              Minimum confidence level for receiving alerts.
+            </p>
 
           <div className="flex flex-wrap gap-2">
             {(["All", "Medium", "High"] as const).map((option) => (
@@ -407,10 +444,11 @@ export default function SettingsPage() {
           </div>
 
           <p className="mt-3 font-mono text-[10px] text-muted-foreground">
-            {profile?.min_confidence === "All" && "You will receive all buy signal alerts."}
+            {profile?.min_confidence === "All" && "You will receive all alerts."}
             {profile?.min_confidence === "Medium" && "You will receive Medium and High confidence alerts."}
             {profile?.min_confidence === "High" && "You will only receive High confidence alerts."}
           </p>
+          </div>
         </section>
 
         {/* Daily Briefing */}
@@ -473,6 +511,45 @@ export default function SettingsPage() {
         </section>
       </div>
     </main>
+  );
+}
+
+function Toggle({
+  label,
+  description,
+  checked,
+  onChange,
+}: {
+  label: string;
+  description: string;
+  checked: boolean;
+  onChange: (value: boolean) => void;
+}) {
+  return (
+    <div className="flex items-center justify-between gap-3 rounded-md border border-terminal-border/60 bg-terminal-dark/40 p-3">
+      <div className="min-w-0">
+        <p className="font-mono text-xs font-medium text-foreground">{label}</p>
+        <p className="mt-0.5 font-mono text-[10px] leading-relaxed text-muted-foreground">
+          {description}
+        </p>
+      </div>
+      <button
+        type="button"
+        role="switch"
+        aria-checked={checked}
+        aria-label={label}
+        onClick={() => onChange(!checked)}
+        className={`relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors ${
+          checked ? "bg-terminal-green" : "bg-terminal-border"
+        }`}
+      >
+        <span
+          className={`inline-block h-4 w-4 transform rounded-full bg-black transition-transform ${
+            checked ? "translate-x-4" : "translate-x-0.5"
+          }`}
+        />
+      </button>
+    </div>
   );
 }
 

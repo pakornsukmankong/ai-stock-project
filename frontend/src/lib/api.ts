@@ -139,6 +139,14 @@ export const userApi = {
       method: "PATCH",
       body: { min_confidence: minConfidence },
     }),
+
+  // Toggle which signal types (buy / sell) push to LINE. Send only the changed
+  // channel; the backend leaves the other untouched.
+  updateSignalChannels: (channels: { notify_buy?: boolean; notify_sell?: boolean }) =>
+    apiRequest("/user/signal-channels", {
+      method: "PATCH",
+      body: channels,
+    }),
 };
 
 // Types
@@ -166,6 +174,8 @@ export interface UserProfile {
   line_user_id: string | null;
   is_active: boolean;
   min_confidence: string;
+  notify_buy: boolean;
+  notify_sell: boolean;
 }
 
 export interface CandleData {

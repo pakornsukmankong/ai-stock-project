@@ -25,6 +25,17 @@ def _signal(is_buy=True):
     )
 
 
+def _no_sell():
+    """A non-firing sell result, so these buy-focused tests never take the
+    SELL branch."""
+    return SimpleNamespace(
+        is_sell_signal=False,
+        total_score=0,
+        reasons=[],
+        mtf_confluence="n/a",
+    )
+
+
 class _FakeDF:
     empty = False
 
@@ -47,13 +58,24 @@ def _build_scheduler(monkeypatch, *, analysis, is_buy=True):
     monkeypatch.setattr(sch.indicator_engine, "calculate", lambda df: _INDICATORS)
     monkeypatch.setattr(sch.mtf_engine, "analyze", AsyncMock(return_value=None))
     monkeypatch.setattr(sch.signal_engine, "evaluate_with_mtf", lambda i, m: _signal(is_buy))
+    monkeypatch.setattr(sch.signal_engine, "evaluate_sell_with_mtf", lambda i, m: _no_sell())
     monkeypatch.setattr(sch, "_build_weekly_candles", lambda df: [])
     monkeypatch.setattr(sch, "_build_recent_daily_candles", lambda df: [])
     monkeypatch.setattr(sch.ai_service, "analyze", AsyncMock(return_value=analysis))
     return sch
 
 
-_WATCHERS = {"AMZN": [{"user_id": "u1", "line_user_id": "U1", "min_confidence": "All"}]}
+_WATCHERS = {
+    "AMZN": [
+        {
+            "user_id": "u1",
+            "line_user_id": "U1",
+            "min_confidence": "All",
+            "notify_buy": True,
+            "notify_sell": False,
+        }
+    ]
+}
 
 
 @pytest.mark.asyncio
@@ -115,9 +137,84 @@ async def test_cooldown_blocks_repeat_alert(monkeypatch):
     sch = _build_scheduler(monkeypatch, analysis=buy)
     pending = {}
 
-    # This user+symbol already alerted within the cooldown window.
-    await sch._analyze_symbol("AMZN", pending, _WATCHERS, {("u1", "AMZN")})
+    # This user+symbol+side already alerted within the cooldown window.
+    await sch._analyze_symbol("AMZN", pending, _WATCHERS, {("u1", "AMZN", "BUY")})
     assert pending == {}
+
+
+def _sell(is_sell=True):
+    return SimpleNamespace(
+        is_sell_signal=is_sell,
+        total_score=72,
+        reasons=["overbought + bearish divergence"],
+        mtf_confluence="n/a",
+    )
+
+
+def _build_sell_scheduler(monkeypatch, *, analysis):
+    """Buy gate OFF, sell gate ON — exercises the SELL branch."""
+    sch = AnalysisScheduler()
+    monkeypatch.setattr(sch.market_data, "fetch_ohlcv", AsyncMock(return_value=_FakeDF()))
+    monkeypatch.setattr(sch.indicator_engine, "calculate", lambda df: _INDICATORS)
+    monkeypatch.setattr(sch.mtf_engine, "analyze", AsyncMock(return_value=None))
+    monkeypatch.setattr(sch.signal_engine, "evaluate_with_mtf", lambda i, m: _signal(is_buy=False))
+    monkeypatch.setattr(sch.signal_engine, "evaluate_sell_with_mtf", lambda i, m: _sell())
+    monkeypatch.setattr(sch, "_build_weekly_candles", lambda df: [])
+    monkeypatch.setattr(sch, "_build_recent_daily_candles", lambda df: [])
+    monkeypatch.setattr(sch.ai_service, "analyze", AsyncMock(return_value=analysis))
+    return sch
+
+
+def _sell_watchers(notify_sell: bool):
+    return {
+        "AMZN": [
+            {
+                "user_id": "u1",
+                "line_user_id": "U1",
+                "min_confidence": "All",
+                "notify_buy": True,
+                "notify_sell": notify_sell,
+            }
+        ]
+    }
+
+
+@pytest.mark.asyncio
+async def test_ai_sell_queues_alert_when_opted_in(monkeypatch):
+    sell = SimpleNamespace(action="SELL", confidence="High", summary="top", reasons=["x"])
+    sch = _build_sell_scheduler(monkeypatch, analysis=sell)
+    pending = {}
+
+    await sch._analyze_symbol("AMZN", pending, _sell_watchers(True), set())
+
+    assert "u1" in pending
+    assert pending["u1"]["items"][0]["analysis"].action == "SELL"
+
+
+@pytest.mark.asyncio
+async def test_sell_not_analyzed_when_no_one_opted_in(monkeypatch):
+    """The sell side is opt-in: with notify_sell off, the AI is never called."""
+    sell = SimpleNamespace(action="SELL", confidence="High", summary="top", reasons=["x"])
+    sch = _build_sell_scheduler(monkeypatch, analysis=sell)
+    pending = {}
+
+    await sch._analyze_symbol("AMZN", pending, _sell_watchers(False), set())
+
+    assert pending == {}
+    sch.ai_service.analyze.assert_not_awaited()  # token saving
+
+
+@pytest.mark.asyncio
+async def test_sell_cooldown_is_independent_of_buy(monkeypatch):
+    """A BUY already sent must not suppress a SELL on the same symbol."""
+    sell = SimpleNamespace(action="SELL", confidence="High", summary="top", reasons=["x"])
+    sch = _build_sell_scheduler(monkeypatch, analysis=sell)
+    pending = {}
+
+    # Only the BUY side is on cooldown; the SELL should still go through.
+    await sch._analyze_symbol("AMZN", pending, _sell_watchers(True), {("u1", "AMZN", "BUY")})
+
+    assert "u1" in pending
 
 
 @pytest.mark.asyncio
@@ -128,4 +225,4 @@ async def test_ai_failure_does_not_alert_and_is_retried(monkeypatch):
     await sch._analyze_symbol("AMZN", pending, _WATCHERS, set())
     assert pending == {}
     # No verdict remembered, so the next cycle re-asks rather than caching a miss.
-    assert "AMZN" not in sch._last_ai_action
+    assert ("AMZN", "BUY") not in sch._last_ai_action

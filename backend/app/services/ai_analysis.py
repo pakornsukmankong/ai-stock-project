@@ -84,12 +84,21 @@ HOLD criteria (the dip is NOT buyable yet):
   weekly trend has turned down) — that is a trend change, not a dip. This is the
   falling-knife guard: skip it.
 
-SELL/AVOID criteria:
-- Price overextended (>5% above EMA21)
-- RSI > 70 (overbought, likely to pull back)
-- At 52-week highs with no pullback
-- Volume declining in uptrend (distribution)
-- All timeframes showing bearish divergence
+SELL criteria — TAKE PROFIT AT THE TOP (a positive exit signal, not just "avoid"):
+Say SELL when the stock has RUN UP and is now rolling over. Require BOTH:
+- Overbought / extended: RSI > 65-70, or price >5% above EMA21, at/above the
+  upper Bollinger Band, or at pivot resistance (R1/R2)
+- AND a bearish reversal TURN — at least one of: bearish RSI/MACD divergence
+  (price higher high, momentum lower high), MACD bearish crossover (histogram
+  flipped negative), or a bearish reversal candle (Bearish Engulfing, Shooting
+  Star)
+Overbought ALONE is not a SELL — strong trends stay overbought for a long time.
+It becomes a SELL only once momentum starts to fade/turn. This mirrors the BUY
+dip-zone logic on the opposite side.
+
+AVOID (still HOLD, not SELL):
+- At 52-week highs but momentum still rising with no bearish turn (let it run)
+- A single overbought reading with no divergence or cross
 
 Historical Price Analysis for Dip Buying:
 - Use WEEKLY candles to identify: is this a dip within an uptrend, or a breakdown?

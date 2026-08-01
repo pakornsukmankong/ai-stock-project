@@ -258,11 +258,16 @@ class LineNotificationService:
             f"🕐 {market_local_time(market)}"
         )
 
+    # Section headers per signal type in a multi-signal digest.
+    _SECTION = {"BUY": "🚀 BUY SIGNALS", "SELL": "🔴 SELL SIGNALS"}
+
     def format_digest(self, items: list[dict]) -> str:
-        """Combine multiple buy signals for one user into a single message.
+        """Combine multiple signals for one user into a single message.
 
         Sending one digest instead of N separate pushes is the main lever for
-        staying under the LINE monthly message quota.
+        staying under the LINE monthly message quota. A digest may mix BUY and
+        SELL items (different symbols in the same cycle), so they're grouped into
+        labelled sections.
 
         Args:
             items: list of {"symbol", "analysis": AIAnalysisResult, "price": float}
@@ -271,18 +276,30 @@ class LineNotificationService:
             it = items[0]
             return self._format_message(it["analysis"], it["price"])
 
-        lines = [f"🚀 BUY SIGNALS ({len(items)})", "━━━━━━━━━━━━━━━"]
+        # Group by action, BUY first, preserving discovery order within a group.
+        grouped: dict[str, list[dict]] = {}
         for it in items:
-            analysis: AIAnalysisResult = it["analysis"]
-            price = it["price"]
-            market = market_for_symbol(analysis.symbol)
-            lines.append(
-                f"📈 {analysis.symbol}  {market.currency_symbol}{price:.2f}  ·  {analysis.confidence}"
-            )
-            lines.append(f"💡 {analysis.summary[:160]}")
-            for reason in analysis.reasons[:3]:
-                lines.append(f"• {reason}")
-            lines.append("")  # blank line between stocks
+            grouped.setdefault(it["analysis"].action, []).append(it)
+
+        lines: list = []
+        for action in ("BUY", "SELL"):
+            group = grouped.get(action)
+            if not group:
+                continue
+            header = self._SECTION.get(action, f"{action} SIGNALS")
+            lines.append(f"{header} ({len(group)})")
+            lines.append("━━━━━━━━━━━━━━━")
+            for it in group:
+                analysis: AIAnalysisResult = it["analysis"]
+                price = it["price"]
+                market = market_for_symbol(analysis.symbol)
+                lines.append(
+                    f"📈 {analysis.symbol}  {market.currency_symbol}{price:.2f}  ·  {analysis.confidence}"
+                )
+                lines.append(f"💡 {analysis.summary[:160]}")
+                for reason in analysis.reasons[:3]:
+                    lines.append(f"• {reason}")
+                lines.append("")  # blank line between stocks
 
         # A cycle only bundles symbols from open exchanges, and US/SET don't
         # overlap — so one timestamp in the batch's market is accurate.
