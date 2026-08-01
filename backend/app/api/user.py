@@ -4,7 +4,11 @@ from fastapi.concurrency import run_in_threadpool
 from app.core.database import get_supabase_client, db
 from app.core.auth import get_current_user_id
 from app.core.error_monitor import monitor
-from app.schemas.user import ConnectLineRequest, UpdateNotificationPreferenceRequest
+from app.schemas.user import (
+    ConnectLineRequest,
+    UpdateNotificationPreferenceRequest,
+    UpdateSignalChannelsRequest,
+)
 from app.services.line_linking import create_link_code
 
 router = APIRouter(prefix="/user", tags=["user"])
@@ -117,6 +121,40 @@ async def update_notification_preference(
     except Exception as e:
         monitor.log_error("user.notification_preference", str(e))
         raise HTTPException(status_code=500, detail="Failed to update preference")
+
+
+@router.patch("/signal-channels")
+async def update_signal_channels(
+    request: UpdateSignalChannelsRequest,
+    user_id: str = Depends(get_current_user_id),
+):
+    """Toggle which signal types (BUY / SELL) push to LINE."""
+    updates = {}
+    if request.notify_buy is not None:
+        updates["notify_buy"] = request.notify_buy
+    if request.notify_sell is not None:
+        updates["notify_sell"] = request.notify_sell
+
+    if not updates:
+        raise HTTPException(status_code=400, detail="No channel provided")
+
+    try:
+        supabase = get_supabase_client()
+
+        response = await db(
+            supabase.table("users").update(updates).eq("id", user_id)
+        )
+
+        if not response.data:
+            raise HTTPException(status_code=404, detail="User not found")
+
+        return {"message": "Signal channels updated", **updates}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        monitor.log_error("user.signal_channels", str(e))
+        raise HTTPException(status_code=500, detail="Failed to update signal channels")
 
 
 async def _ensure_user_exists(supabase, user_id: str) -> dict:

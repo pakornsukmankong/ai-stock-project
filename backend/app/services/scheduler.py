@@ -25,8 +25,9 @@ class AnalysisScheduler:
     1. Get all active watchlist stocks
     2. Fetch market data for each
     3. Calculate indicators
-    4. Run signal engine (rule-based)
-    5. If buy signal → AI analysis → LINE notification → Save alert
+    4. Run signal engine (rule-based) — both the buy-on-dip and sell-at-top gates
+    5. If a buy or sell signal fires → AI analysis → LINE notification → Save alert
+       (the sell side is opt-in per user; buy takes priority if both fire)
     """
 
     def __init__(self) -> None:
@@ -39,11 +40,13 @@ class AnalysisScheduler:
         # Log-noise control only (NOT gating). The AI is consulted for every
         # active signal each cycle — its 30-min cache throttles cost and the 24h
         # per-user+symbol cooldown throttles alerts. These dicts just avoid
-        # repeating the same line every 5 minutes while a persistent uptrend
-        # stays active: the rule-based "BUY SIGNAL" line is logged on the rising
-        # edge, and the "AI decision" line only when the verdict changes.
-        self._signal_active: dict[str, bool] = {}
-        self._last_ai_action: dict[str, str] = {}
+        # repeating the same line every 5 minutes while a persistent signal stays
+        # active: the rule-based "BUY/SELL SIGNAL" line is logged on the rising
+        # edge, and the "AI decision" line only when the verdict changes. Keyed by
+        # (symbol, kind) where kind is "BUY" or "SELL" — the two sides are tracked
+        # independently.
+        self._signal_active: dict[tuple[str, str], bool] = {}
+        self._last_ai_action: dict[tuple[str, str], str] = {}
         # Guards against two cycles running at once (the interval job overlapping
         # a slow run, or a manual /analysis/trigger landing mid-cycle).
         self._cycle_lock = asyncio.Lock()
@@ -90,12 +93,14 @@ class AnalysisScheduler:
             # logs its signal freshly. Keyed on ALL watched symbols (not just the
             # ones analyzed this cycle), so a closed-market symbol keeps its state
             # until its exchange opens again.
+            # State is keyed by (symbol, kind) — keep entries whose symbol is still
+            # watched.
             active_set = set(all_symbols)
             self._signal_active = {
-                s: v for s, v in self._signal_active.items() if s in active_set
+                k: v for k, v in self._signal_active.items() if k[0] in active_set
             }
             self._last_ai_action = {
-                s: v for s, v in self._last_ai_action.items() if s in active_set
+                k: v for k, v in self._last_ai_action.items() if k[0] in active_set
             }
 
             # Analyze only symbols whose exchange is open right now. US and SET
@@ -146,7 +151,10 @@ class AnalysisScheduler:
         try:
             response = await db(
                 self.supabase.table("watchlist_stocks")
-                .select("symbol, watchlists(user_id, users(line_user_id, min_confidence))")
+                .select(
+                    "symbol, watchlists(user_id, "
+                    "users(line_user_id, min_confidence, notify_buy, notify_sell))"
+                )
                 .eq("is_enabled", True)
             )
 
@@ -171,6 +179,10 @@ class AnalysisScheduler:
                             "user_id": user_id,
                             "line_user_id": line_user_id,
                             "min_confidence": user.get("min_confidence") or "All",
+                            # Columns added in migration 007; default to the
+                            # pre-migration behaviour if a row predates it.
+                            "notify_buy": user.get("notify_buy", True),
+                            "notify_sell": user.get("notify_sell", False),
                         }
                     )
 
@@ -179,10 +191,12 @@ class AnalysisScheduler:
             logger.error(f"Error fetching active symbols: {e}")
             return {}
 
-    async def _get_recently_alerted(self) -> set[tuple[str, str]]:
-        """(user_id, symbol) pairs alerted within the cooldown window.
+    async def _get_recently_alerted(self) -> set[tuple[str, str, str]]:
+        """(user_id, symbol, signal_type) triples alerted within the cooldown window.
 
-        Fetched once per cycle instead of one query per (user, symbol) candidate.
+        Keyed by signal_type so a BUY cooldown doesn't suppress a later SELL on
+        the same symbol (and vice versa) — they're independent alerts.
+        Fetched once per cycle instead of one query per candidate.
         """
         try:
             cooldown_hours = get_settings().alert_cooldown_hours
@@ -190,12 +204,14 @@ class AnalysisScheduler:
 
             response = await db(
                 self.supabase.table("alerts")
-                .select("user_id, stock_symbol")
-                .eq("signal_type", "BUY")
+                .select("user_id, stock_symbol, signal_type")
                 .gte("sent_at", cutoff)
             )
 
-            return {(row["user_id"], row["stock_symbol"]) for row in response.data}
+            return {
+                (row["user_id"], row["stock_symbol"], row.get("signal_type", "BUY"))
+                for row in response.data
+            }
         except Exception as e:
             logger.error(f"Error fetching recent alerts: {e}")
             # Fail closed: an empty set would let every signal through and
@@ -232,114 +248,153 @@ class AnalysisScheduler:
                 logger.warning(f"MTF analysis failed for {symbol} (using single TF): {e}")
                 mtf_result = None
 
-            # Step 4: Run signal engine with MTF adjustment
-            signal = self.signal_engine.evaluate_with_mtf(indicators, mtf_result)
+            # Step 4: Run BOTH rule-based gates (buy-on-dip and sell-at-top).
+            # There is NO edge-trigger gate here: the previous version locked a
+            # persistently-active signal after a single AI HOLD, so a strong-trend
+            # symbol was never re-evaluated. Now every active signal is sent to the
+            # AI each cycle — cost is bounded by the analysis cache (~one real call
+            # per 30 min) and alert spam by the 24h cooldown.
+            symbol_watchers = watchers.get(symbol, [])
 
-            # Step 5: Rule-based gate. Stop if there's no buy signal (no AI call).
-            # There is NO edge-trigger gate here anymore: the previous version
-            # locked a persistently-active signal after a single AI HOLD, and a
-            # strong-uptrend symbol stays a "dip buy candidate" for days, so it
-            # was never re-evaluated and never alerted. Now every active signal is
-            # sent to the AI each cycle — cost is bounded by the analysis cache
-            # (~one real call per 30 min) and alert spam by the 24h cooldown.
-            was_active = self._signal_active.get(symbol, False)
-            now_active = signal.is_buy_signal
-            self._signal_active[symbol] = now_active
+            buy_signal = self.signal_engine.evaluate_with_mtf(indicators, mtf_result)
+            buy_score = buy_signal.mtf_adjusted_score if mtf_result else buy_signal.total_score
+            self._log_rule_edge("BUY", symbol, buy_signal.is_buy_signal, buy_score, buy_signal)
 
-            if not now_active:
-                self._last_ai_action.pop(symbol, None)
-                return
+            sell_signal = self.signal_engine.evaluate_sell_with_mtf(indicators, mtf_result)
+            self._log_rule_edge("SELL", symbol, sell_signal.is_sell_signal, sell_signal.total_score, sell_signal)
 
-            # Log the (long) rule-based line only on the rising edge, not every
-            # 5-minute cycle the signal stays active.
-            display_score = signal.mtf_adjusted_score if mtf_result else signal.total_score
-            if not was_active:
-                print(f"  BUY SIGNAL for {symbol} (score: {display_score}/100, "
-                      f"base: {signal.total_score}, MTF bonus: +{signal.mtf_bonus}, "
-                      f"penalty: -{signal.mtf_penalty}): {signal.reasons}")
-
-            # Step 6: Build compact summary for AI (with MTF data)
-            signal_summary = StockSignalSummary(
-                symbol=symbol,
-                price=indicators.current_price,
-                score=display_score,
-                # Trend
-                ema_9=indicators.ema_9,
-                ema_21=indicators.ema_21,
-                ema_50=indicators.ema_50,
-                ema_200=indicators.ema_200,
-                macd_value=indicators.macd_value,
-                macd_signal=indicators.macd_signal,
-                macd_histogram=indicators.macd_histogram,
-                supertrend_direction=indicators.supertrend_direction,
-                supertrend_value=indicators.supertrend_value,
-                # Momentum
-                rsi=indicators.rsi,
-                rsi_state=indicators.rsi_state,
-                stoch_k=indicators.stoch_k,
-                stoch_d=indicators.stoch_d,
-                # Volatility
-                atr=indicators.atr,
-                bb_upper=indicators.bb_upper,
-                bb_middle=indicators.bb_middle,
-                bb_lower=indicators.bb_lower,
-                bb_position=indicators.bb_position,
-                # Volume
-                volume_ratio=indicators.current_volume / indicators.avg_volume if indicators.avg_volume > 0 else 1.0,
-                # Market Structure
-                pivot=indicators.pivot_levels.pivot,
-                r1=indicators.pivot_levels.r1,
-                r2=indicators.pivot_levels.r2,
-                s1=indicators.pivot_levels.s1,
-                s2=indicators.pivot_levels.s2,
-                # Patterns
-                candle_patterns=indicators.candle_patterns.get_detected(),
-                signal_reasons=signal.reasons,
-                # Multi-Timeframe
-                mtf_trend_alignment=signal.mtf_confluence,
-                mtf_4h_trend=mtf_result.four_hour.trend_direction if mtf_result and mtf_result.four_hour.is_valid else "n/a",
-                mtf_1h_trend=mtf_result.one_hour.trend_direction if mtf_result and mtf_result.one_hour.is_valid else "n/a",
-                mtf_4h_rsi=mtf_result.four_hour.indicators.rsi if mtf_result and mtf_result.four_hour.indicators else 0.0,
-                mtf_1h_rsi=mtf_result.one_hour.indicators.rsi if mtf_result and mtf_result.one_hour.indicators else 0.0,
-                mtf_bonus=signal.mtf_bonus,
-                mtf_penalty=signal.mtf_penalty,
-                # Historical Candle Data
-                weekly_candles=self._build_weekly_candles(df),
-                daily_candles=self._build_recent_daily_candles(df),
-            )
-
-            # Step 7: AI analysis (served from the 30-min cache when fresh).
-            analysis = await self.ai_service.analyze(signal_summary)
-            if analysis is None:
-                # AI failed — leave last_action untouched so the failure is
-                # retried next cycle rather than remembered as a verdict.
-                return
-
-            # Only notify if AI says BUY (not HOLD or SELL). Log the verdict only
-            # when it changes, so a steady HOLD doesn't repeat every cycle.
-            if analysis.action != "BUY":
-                if self._last_ai_action.get(symbol) != analysis.action:
-                    print(f"  AI decision for {symbol}: {analysis.action} — skipping notification")
-                self._last_ai_action[symbol] = analysis.action
-                return
-
-            if self._last_ai_action.get(symbol) != "BUY":
-                print(f"  AI decision for {symbol}: BUY — queueing alert")
-            self._last_ai_action[symbol] = "BUY"
-
-            # Step 8: Queue this signal for every user watching the stock
-            # (sent as a digest at the end of the cycle).
-            self._collect_users(
-                symbol,
-                analysis,
-                indicators.current_price,
-                pending,
-                watchers.get(symbol, []),
-                recently_alerted,
-            )
+            # Step 5: Decide which side (if any) to send to the AI. BUY and SELL
+            # setups are near mutually exclusive (a dip vs an overbought top), but
+            # if both fire, BUY wins. The SELL side is opt-in and default-off, so
+            # only spend an AI call on it when at least one watcher enabled it —
+            # the BUY side keeps its prior behaviour (always analyzed, for the
+            # dashboard and logs).
+            if buy_signal.is_buy_signal:
+                await self._run_ai_side(
+                    "BUY", symbol, df, indicators, mtf_result, buy_signal, buy_score,
+                    pending, symbol_watchers, recently_alerted,
+                )
+            elif sell_signal.is_sell_signal and any(w["notify_sell"] for w in symbol_watchers):
+                await self._run_ai_side(
+                    "SELL", symbol, df, indicators, mtf_result, sell_signal, sell_signal.total_score,
+                    pending, symbol_watchers, recently_alerted,
+                )
+            else:
+                # Neither side actionable — drop any remembered AI verdicts so a
+                # re-arm next time re-asks rather than reusing a stale one.
+                self._last_ai_action.pop((symbol, "BUY"), None)
+                self._last_ai_action.pop((symbol, "SELL"), None)
 
         except Exception as e:
             logger.error(f"Error analyzing {symbol}: {e}")
+
+    def _log_rule_edge(self, kind: str, symbol: str, now_active: bool, score, signal) -> None:
+        """Log the (long) rule-based line only on the rising edge of a signal.
+
+        Also forgets the AI verdict on the falling edge so a re-arm re-asks.
+        """
+        key = (symbol, kind)
+        was_active = self._signal_active.get(key, False)
+        self._signal_active[key] = now_active
+
+        if now_active and not was_active:
+            if kind == "BUY":
+                print(f"  BUY SIGNAL for {symbol} (score: {score}/100, "
+                      f"base: {signal.total_score}, MTF bonus: +{signal.mtf_bonus}, "
+                      f"penalty: -{signal.mtf_penalty}): {signal.reasons}")
+            else:
+                print(f"  SELL SIGNAL for {symbol} (score: {score}/100): {signal.reasons}")
+
+        if not now_active:
+            self._last_ai_action.pop(key, None)
+
+    async def _run_ai_side(
+        self, kind, symbol, df, indicators, mtf_result, signal, score,
+        pending, symbol_watchers, recently_alerted,
+    ) -> None:
+        """Send one side's signal to the AI and, if it agrees, queue the alert."""
+        summary = self._build_summary(symbol, df, indicators, mtf_result, signal, score, kind)
+
+        # AI analysis (served from the 30-min cache when fresh).
+        analysis = await self.ai_service.analyze(summary)
+        if analysis is None:
+            # AI failed — leave last_action untouched so the failure is retried
+            # next cycle rather than remembered as a verdict.
+            return
+
+        key = (symbol, kind)
+        # Only notify when the AI's verdict matches this side (a SELL setup needs
+        # the AI to say SELL; anything else — HOLD, or a contrary BUY — is skipped).
+        # Log the verdict only when it changes, so a steady HOLD doesn't repeat.
+        if analysis.action != kind:
+            if self._last_ai_action.get(key) != analysis.action:
+                print(f"  AI decision for {symbol} ({kind} setup): {analysis.action} — skipping notification")
+            self._last_ai_action[key] = analysis.action
+            return
+
+        if self._last_ai_action.get(key) != kind:
+            print(f"  AI decision for {symbol}: {kind} — queueing alert")
+        self._last_ai_action[key] = kind
+
+        self._collect_users(
+            symbol, analysis, indicators.current_price, pending,
+            symbol_watchers, recently_alerted, kind,
+        )
+
+    def _build_summary(self, symbol, df, indicators, mtf_result, signal, score, kind) -> StockSignalSummary:
+        """Build the compact AI summary. The MTF bonus/penalty is a BUY-side
+        concept, so it's zeroed for the SELL side (which carries only the
+        informational confluence label)."""
+        mtf_bonus = getattr(signal, "mtf_bonus", 0)
+        mtf_penalty = getattr(signal, "mtf_penalty", 0)
+        return StockSignalSummary(
+            symbol=symbol,
+            price=indicators.current_price,
+            score=score,
+            # Trend
+            ema_9=indicators.ema_9,
+            ema_21=indicators.ema_21,
+            ema_50=indicators.ema_50,
+            ema_200=indicators.ema_200,
+            macd_value=indicators.macd_value,
+            macd_signal=indicators.macd_signal,
+            macd_histogram=indicators.macd_histogram,
+            supertrend_direction=indicators.supertrend_direction,
+            supertrend_value=indicators.supertrend_value,
+            # Momentum
+            rsi=indicators.rsi,
+            rsi_state=indicators.rsi_state,
+            stoch_k=indicators.stoch_k,
+            stoch_d=indicators.stoch_d,
+            # Volatility
+            atr=indicators.atr,
+            bb_upper=indicators.bb_upper,
+            bb_middle=indicators.bb_middle,
+            bb_lower=indicators.bb_lower,
+            bb_position=indicators.bb_position,
+            # Volume
+            volume_ratio=indicators.current_volume / indicators.avg_volume if indicators.avg_volume > 0 else 1.0,
+            # Market Structure
+            pivot=indicators.pivot_levels.pivot,
+            r1=indicators.pivot_levels.r1,
+            r2=indicators.pivot_levels.r2,
+            s1=indicators.pivot_levels.s1,
+            s2=indicators.pivot_levels.s2,
+            # Patterns
+            candle_patterns=indicators.candle_patterns.get_detected(),
+            signal_reasons=signal.reasons,
+            # Multi-Timeframe
+            mtf_trend_alignment=signal.mtf_confluence,
+            mtf_4h_trend=mtf_result.four_hour.trend_direction if mtf_result and mtf_result.four_hour.is_valid else "n/a",
+            mtf_1h_trend=mtf_result.one_hour.trend_direction if mtf_result and mtf_result.one_hour.is_valid else "n/a",
+            mtf_4h_rsi=mtf_result.four_hour.indicators.rsi if mtf_result and mtf_result.four_hour.indicators else 0.0,
+            mtf_1h_rsi=mtf_result.one_hour.indicators.rsi if mtf_result and mtf_result.one_hour.indicators else 0.0,
+            mtf_bonus=mtf_bonus,
+            mtf_penalty=mtf_penalty,
+            # Historical Candle Data
+            weekly_candles=self._build_weekly_candles(df),
+            daily_candles=self._build_recent_daily_candles(df),
+        )
 
     def _build_weekly_candles(self, df) -> list[dict]:
         """Resample daily data to weekly candles (52 weeks = 1 year overview).
@@ -410,32 +465,40 @@ class AnalysisScheduler:
         price: float,
         pending: dict,
         watchers: list[dict],
-        recently_alerted: set[tuple[str, str]],
+        recently_alerted: set[tuple[str, str, str]],
+        kind: str,
     ) -> None:
         """Queue this signal for every eligible user into the per-user digest buckets.
 
         Purely in-memory: the watcher list and the cooldown set are both fetched
-        once per cycle by the caller.
+        once per cycle by the caller. `kind` is "BUY" or "SELL" — users are
+        filtered by their per-side toggle and the cooldown is tracked per side.
 
-        Every path that drops a signal logs why: an AI-approved BUY that reaches
-        nobody is the single most confusing outcome to debug from the outside.
+        Every path that drops a signal logs why: an AI-approved signal that
+        reaches nobody is the single most confusing outcome to debug from outside.
         """
+        toggle_field = "notify_buy" if kind == "BUY" else "notify_sell"
+
         if not watchers:
             logger.info(
-                f"  {symbol}: BUY approved but no watcher has LINE connected — not sent"
+                f"  {symbol}: {kind} approved but no watcher has LINE connected — not sent"
             )
             return
 
         for watcher in watchers:
             user_id = watcher["user_id"]
 
-            # Skip if the user was already alerted for this stock within the
-            # cooldown window (ALERT_COOLDOWN_HOURS). Logged: an AI-approved BUY
+            # Respect the user's per-side toggle (buy vs sell notifications).
+            if not watcher.get(toggle_field, kind == "BUY"):
+                continue
+
+            # Skip if the user was already alerted for this stock+side within the
+            # cooldown window (ALERT_COOLDOWN_HOURS). Logged: an AI-approved alert
             # dropped here is otherwise invisible, which reads as "the system
             # didn't notify me" with nothing in the logs to explain it.
-            if (user_id, symbol) in recently_alerted:
+            if (user_id, symbol, kind) in recently_alerted:
                 logger.info(
-                    f"  {symbol}: {user_id} already alerted within the last "
+                    f"  {symbol}: {user_id} already alerted ({kind}) within the last "
                     f"{get_settings().alert_cooldown_hours}h — skipping"
                 )
                 continue
@@ -537,14 +600,15 @@ class AnalysisScheduler:
         analysis: "AIAnalysisResult",
         price: float = None,
     ) -> None:
-        """Save alert to history."""
+        """Save alert to history. signal_type follows the AI verdict (BUY/SELL)."""
         try:
+            signal_type = analysis.action if analysis.action in ("BUY", "SELL") else "BUY"
             await db(
                 self.supabase.table("alerts").insert(
                     {
                         "user_id": user_id,
                         "stock_symbol": symbol,
-                        "signal_type": "BUY",
+                        "signal_type": signal_type,
                         "ai_summary": analysis.summary,
                         "confidence": analysis.confidence,
                         "reasons": analysis.reasons,

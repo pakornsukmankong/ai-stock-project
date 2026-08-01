@@ -8,6 +8,8 @@ class UserProfile(BaseModel):
     line_user_id: Optional[str] = None
     is_active: bool = True
     min_confidence: str = "All"
+    notify_buy: bool = True
+    notify_sell: bool = False
 
 
 class ConnectLineRequest(BaseModel):
@@ -18,3 +20,10 @@ class ConnectLineRequest(BaseModel):
 
 class UpdateNotificationPreferenceRequest(BaseModel):
     min_confidence: Literal["All", "High", "Medium"]
+
+
+class UpdateSignalChannelsRequest(BaseModel):
+    """Toggle which signal types push to LINE. Both optional so the frontend can
+    flip one without resending the other; at least one must be present."""
+    notify_buy: Optional[bool] = None
+    notify_sell: Optional[bool] = None

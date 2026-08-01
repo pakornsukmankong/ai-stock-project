@@ -106,6 +106,12 @@ class IndicatorResult:
     stoch_bullish_cross: bool = False     # %K crossed above %D
     rsi_bullish_divergence: bool = False  # price lower-low, RSI higher-low
     macd_bullish_divergence: bool = False # price lower-low, MACD higher-low
+    # Bearish mirrors — the "sell at the top" confirmations. Same closed-bar
+    # discipline: a turn DOWN, not just a high reading.
+    macd_bearish_cross: bool = False      # histogram crossed from >=0 to <0
+    stoch_bearish_cross: bool = False     # %K crossed below %D
+    rsi_bearish_divergence: bool = False  # price higher-high, RSI lower-high
+    macd_bearish_divergence: bool = False # price higher-high, MACD lower-high
     macd_histogram_norm: float = 0.0      # histogram as % of price (scale-free)
 
     # Legacy fields for signal engine compatibility
@@ -368,6 +374,8 @@ class IndicatorEngine:
         if pd.notna(h_cur) and pd.notna(h_prev):
             # Bullish cross: histogram flipped from <=0 to >0
             result.macd_bullish_cross = bool(h_prev <= 0 < h_cur)
+            # Bearish cross: histogram flipped from >=0 to <0 (the sell mirror)
+            result.macd_bearish_cross = bool(h_prev >= 0 > h_cur)
             # Turning up: still below zero but rising for two consecutive bars
             # (monotonic increase is scale-free — no absolute threshold needed)
             if pd.notna(h_prev2):
@@ -382,10 +390,13 @@ class IndicatorEngine:
         d_cur, d_prev = d.iloc[-2], d.iloc[-3]
         if all(pd.notna(x) for x in (k_cur, k_prev, d_cur, d_prev)):
             result.stoch_bullish_cross = bool(k_prev <= d_prev and k_cur > d_cur)
+            result.stoch_bearish_cross = bool(k_prev >= d_prev and k_cur < d_cur)
 
-        # --- Bullish divergence: price lower-low, indicator higher-low ---
+        # --- Divergence: bullish (lower-low) and bearish (higher-high) ---
         result.rsi_bullish_divergence = self._bullish_divergence(close, rsi_series)
         result.macd_bullish_divergence = self._bullish_divergence(close, macd_line)
+        result.rsi_bearish_divergence = self._bearish_divergence(close, rsi_series)
+        result.macd_bearish_divergence = self._bearish_divergence(close, macd_line)
 
     def _bullish_divergence(self, price: pd.Series, indicator: pd.Series) -> bool:
         """True when the two most recent pivot lows show price falling while the
@@ -406,6 +417,25 @@ class IndicatorEngine:
 
         return bool(p2 < p1 and v2 > v1)
 
+    def _bearish_divergence(self, price: pd.Series, indicator: pd.Series) -> bool:
+        """True when the two most recent pivot highs show price rising while the
+        indicator falls (classic bearish divergence — momentum fading at a top)."""
+        n = DIVERGENCE_LOOKBACK + PIVOT_RIGHT + 1
+        seg_price = price.iloc[-n:] if len(price) >= n else price
+        seg_ind = indicator.iloc[-n:] if len(indicator) >= n else indicator
+
+        highs = self._pivot_highs(seg_price)
+        if len(highs) < 2:
+            return False
+
+        i1, i2 = highs[-2], highs[-1]
+        p1, p2 = seg_price.iloc[i1], seg_price.iloc[i2]
+        v1, v2 = seg_ind.iloc[i1], seg_ind.iloc[i2]
+        if any(pd.isna(x) for x in (p1, p2, v1, v2)):
+            return False
+
+        return bool(p2 > p1 and v2 < v1)
+
     def _pivot_lows(self, series: pd.Series) -> list[int]:
         """Return integer positions of confirmed pivot lows (a bar that is the
         minimum of its [-LEFT, +RIGHT] window and below both neighbours)."""
@@ -417,5 +447,19 @@ class IndicatorEngine:
                 continue
             window = vals[i - PIVOT_LEFT : i + PIVOT_RIGHT + 1]
             if vals[i] == np.nanmin(window) and vals[i] < vals[i - 1] and vals[i] < vals[i + 1]:
+                pivots.append(i)
+        return pivots
+
+    def _pivot_highs(self, series: pd.Series) -> list[int]:
+        """Return integer positions of confirmed pivot highs (a bar that is the
+        maximum of its [-LEFT, +RIGHT] window and above both neighbours)."""
+        vals = series.values
+        n = len(vals)
+        pivots: list[int] = []
+        for i in range(PIVOT_LEFT, n - PIVOT_RIGHT):
+            if np.isnan(vals[i]):
+                continue
+            window = vals[i - PIVOT_LEFT : i + PIVOT_RIGHT + 1]
+            if vals[i] == np.nanmax(window) and vals[i] > vals[i - 1] and vals[i] > vals[i + 1]:
                 pivots.append(i)
         return pivots
