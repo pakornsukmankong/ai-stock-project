@@ -105,12 +105,11 @@ async def get_performance_stats(
         supabase = get_supabase_client()
         offset = (page - 1) * per_page
 
-        # Get total count of BUY alerts with price
+        # Count tracked alerts (BUY and SELL) with a captured price.
         count_response = await db(
             supabase.table("alerts")
             .select("id", count="exact")
             .eq("user_id", user_id)
-            .eq("signal_type", "BUY")
             .not_.is_("alert_price", "null")
         )
         total = count_response.count or 0
@@ -119,12 +118,11 @@ async def get_performance_stats(
         response = await db(
             supabase.table("alerts")
             .select(
-                "stock_symbol, alert_price, price_after_1d, price_after_3d, "
+                "stock_symbol, signal_type, alert_price, price_after_1d, price_after_3d, "
                 "price_after_7d, return_1d, return_3d, return_7d, is_successful, "
                 "sent_at, confidence"
             )
             .eq("user_id", user_id)
-            .eq("signal_type", "BUY")
             .not_.is_("alert_price", "null")
             .order("sent_at", desc=True)
             .range(offset, offset + per_page - 1)
@@ -133,12 +131,12 @@ async def get_performance_stats(
         alerts_data = response.data
 
         # Overall stats, computed over the most recent STATS_SAMPLE_LIMIT alerts
-        # rather than the user's entire (unbounded) history.
+        # rather than the user's entire (unbounded) history. Returns are stored as
+        # signal performance (SELL inverted), so BUY and SELL aggregate together.
         all_response = await db(
             supabase.table("alerts")
-            .select("is_successful, return_7d")
+            .select("signal_type, is_successful, return_7d")
             .eq("user_id", user_id)
-            .eq("signal_type", "BUY")
             .not_.is_("alert_price", "null")
             .order("sent_at", desc=True)
             .limit(STATS_SAMPLE_LIMIT)
@@ -154,6 +152,17 @@ async def get_performance_stats(
         if returns_7d:
             avg_return_7d = sum(returns_7d) / len(returns_7d)
 
+        # Per-side breakdown so the UI can show BUY vs SELL win rates separately.
+        by_type = {}
+        for side in ("BUY", "SELL"):
+            side_tracked = [a for a in tracked if a.get("signal_type", "BUY") == side]
+            side_success = [a for a in side_tracked if a["is_successful"]]
+            by_type[side] = {
+                "tracked": len(side_tracked),
+                "successful": len(side_success),
+                "win_rate": round(len(side_success) / len(side_tracked) * 100, 1) if side_tracked else 0,
+            }
+
         total_pages = (total + per_page - 1) // per_page if total > 0 else 1
 
         return {
@@ -162,6 +171,7 @@ async def get_performance_stats(
             "successful": len(successful),
             "win_rate": round(win_rate, 1),
             "avg_return_7d": round(avg_return_7d, 2),
+            "by_type": by_type,
             "alerts": alerts_data,
             "pagination": {
                 "page": page,
@@ -201,16 +211,15 @@ async def get_recent_alerts(user_id: str = Depends(get_current_user_id)):
 
 @router.delete("/performance/clear")
 async def clear_performance_data(user_id: str = Depends(get_current_user_id)):
-    """Clear all performance tracking alerts (BUY signals with price data) for the user."""
+    """Clear all performance-tracked alerts (BUY and SELL with price data) for the user."""
     try:
         supabase = get_supabase_client()
 
-        # Delete all BUY alerts that have alert_price (performance tracked ones)
+        # Delete all alerts that have alert_price (the performance-tracked ones)
         await db(
             supabase.table("alerts")
             .delete()
             .eq("user_id", user_id)
-            .eq("signal_type", "BUY")
             .not_.is_("alert_price", "null")
         )
 

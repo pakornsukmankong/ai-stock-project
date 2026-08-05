@@ -14,14 +14,27 @@ BENCHMARK_SYMBOL = "SPY"
 
 
 class PerformanceTracker:
-    """Tracks performance of buy signal alerts.
+    """Tracks performance of buy AND sell signal alerts.
 
-    Runs daily to check all alerts that are missing return data
-    and updates them based on how many days have passed.
+    Runs daily to check all alerts that are missing return data and updates them
+    based on how many days have passed.
+
+    Returns are stored as SIGNAL performance, not raw price change: a BUY is
+    "right" when price rises, a SELL is "right" when price falls. So for a SELL
+    the sign is inverted before storing — a positive return_Nd always means "the
+    signal was correct", which lets win-rate/avg-return aggregate uniformly
+    across both sides.
     """
 
     def __init__(self) -> None:
         self.market_data = MarketDataService()
+
+    @staticmethod
+    def _signal_return(raw_return_pct: float, signal_type: str) -> float:
+        """Convert a raw price return into signal performance.
+
+        BUY keeps the sign (up = good); SELL inverts it (down = good)."""
+        return -raw_return_pct if signal_type == "SELL" else raw_return_pct
 
     @property
     def supabase(self):
@@ -32,11 +45,10 @@ class PerformanceTracker:
         print(f"[{local_now():%Y-%m-%d %H:%M:%S %Z}] Starting performance tracking...")
 
         try:
-            # Get all BUY alerts with alert_price that still need tracking
+            # Get all BUY and SELL alerts with alert_price that still need tracking
             response = await db(
                 self.supabase.table("alerts")
-                .select("id, stock_symbol, alert_price, sent_at, return_1d, return_3d, return_7d")
-                .eq("signal_type", "BUY")
+                .select("id, stock_symbol, signal_type, alert_price, sent_at, return_1d, return_3d, return_7d")
                 .not_.is_("alert_price", "null")
                 .order("sent_at", desc=True)
                 .limit(100)
@@ -81,30 +93,32 @@ class PerformanceTracker:
                     continue
 
                 current_price = current_prices[symbol]
+                signal_type = alert.get("signal_type", "BUY")
                 sent_at = datetime.fromisoformat(alert["sent_at"].replace("Z", "+00:00"))
                 days_passed = (now - sent_at).days
+
+                # Raw price move, then signal performance (inverted for SELL).
+                raw_return_pct = ((current_price - alert_price) / alert_price) * 100
+                signal_return_pct = self._signal_return(raw_return_pct, signal_type)
 
                 update_data = {}
 
                 # Update 1D return if >= 1 day passed and not yet set
                 if days_passed >= 1 and alert.get("return_1d") is None:
-                    return_pct = ((current_price - alert_price) / alert_price) * 100
                     update_data["price_after_1d"] = current_price
-                    update_data["return_1d"] = round(return_pct, 2)
+                    update_data["return_1d"] = round(signal_return_pct, 2)
 
                 # Update 3D return if >= 3 days passed and not yet set
                 if days_passed >= 3 and alert.get("return_3d") is None:
-                    return_pct = ((current_price - alert_price) / alert_price) * 100
                     update_data["price_after_3d"] = current_price
-                    update_data["return_3d"] = round(return_pct, 2)
+                    update_data["return_3d"] = round(signal_return_pct, 2)
 
                 # Update 7D return if >= 7 days passed and not yet set
                 if days_passed >= 7 and alert.get("return_7d") is None:
-                    return_pct = ((current_price - alert_price) / alert_price) * 100
                     update_data["price_after_7d"] = current_price
-                    update_data["return_7d"] = round(return_pct, 2)
+                    update_data["return_7d"] = round(signal_return_pct, 2)
                     update_data["is_successful"] = self._beat_benchmark(
-                        return_pct, sent_at, spy_df, spy_now
+                        raw_return_pct, sent_at, spy_df, spy_now, signal_type
                     )
 
                 if update_data:
@@ -136,20 +150,24 @@ class PerformanceTracker:
         sent_at: datetime,
         spy_df: Optional[pd.DataFrame],
         spy_now: Optional[float],
+        signal_type: str = "BUY",
     ) -> bool:
-        """Success = the alert beat SPY over the same window (positive alpha).
+        """Success is side-aware alpha vs SPY over the same window:
 
-        Falls back to an absolute positive return when benchmark data is missing.
+        - BUY  succeeds when the stock OUTperformed SPY (you were right to hold).
+        - SELL succeeds when the stock UNDERperformed SPY (you were right to exit).
+
+        `stock_return_pct` is the RAW price move (not the inverted signal return).
+        Falls back to SPY=0 (absolute move) when benchmark data is missing.
         """
-        if spy_df is None or spy_now is None:
-            return stock_return_pct > 0
+        spy_return_pct = 0.0
+        if spy_df is not None and spy_now is not None:
+            spy_at_alert = self._close_on_or_before(spy_df, sent_at)
+            if spy_at_alert:
+                spy_return_pct = ((spy_now - spy_at_alert) / spy_at_alert) * 100
 
-        spy_at_alert = self._close_on_or_before(spy_df, sent_at)
-        if not spy_at_alert:
-            return stock_return_pct > 0
-
-        spy_return_pct = ((spy_now - spy_at_alert) / spy_at_alert) * 100
-        return stock_return_pct > spy_return_pct
+        outperformed = stock_return_pct > spy_return_pct
+        return outperformed if signal_type != "SELL" else not outperformed
 
     def _close_on_or_before(self, df: pd.DataFrame, dt: datetime) -> Optional[float]:
         """Latest close at or before `dt` (nearest prior trading day)."""
