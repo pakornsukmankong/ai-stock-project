@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import { alertsApi, type Alert } from "@/lib/api";
 import { formatDate } from "@/lib/utils";
-import { Bell, ArrowUpRight } from "lucide-react";
+import { Bell, ArrowUpRight, ArrowDownRight } from "lucide-react";
 import { useToast } from "@/components/toast";
 
 export function AlertsPanel() {
@@ -41,7 +41,7 @@ export function AlertsPanel() {
       <div className="rounded-lg border border-terminal-border bg-terminal-panel p-8 text-center">
         <Bell className="mx-auto h-6 w-6 text-muted-foreground" />
         <p className="mt-2 font-mono text-xs text-muted-foreground">
-          No alerts yet. Signals will appear here when buy conditions are detected.
+          No alerts yet. Signals will appear here when buy or sell conditions are detected.
         </p>
       </div>
     );
@@ -49,18 +49,28 @@ export function AlertsPanel() {
 
   return (
     <div className="space-y-2">
-      {alerts.map((alert) => (
+      {alerts.map((alert) => {
+        const isSell = alert.signal_type === "SELL";
+        const DirIcon = isSell ? ArrowDownRight : ArrowUpRight;
+        const dirColor = isSell ? "text-terminal-red" : "text-terminal-green";
+        const badgeColor = isSell
+          ? "bg-terminal-red/10 text-terminal-red"
+          : "bg-terminal-green/10 text-terminal-green";
+        const hoverBorder = isSell
+          ? "hover:border-terminal-red/30"
+          : "hover:border-terminal-green/30";
+        return (
         <div
           key={alert.id}
-          className="rounded-lg border border-terminal-border bg-terminal-panel p-4 transition-all hover:border-terminal-green/30"
+          className={`rounded-lg border border-terminal-border bg-terminal-panel p-4 transition-all ${hoverBorder}`}
         >
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2">
-              <ArrowUpRight className="h-3.5 w-3.5 text-terminal-green" />
+              <DirIcon className={`h-3.5 w-3.5 ${dirColor}`} />
               <span className="font-mono text-sm font-bold text-foreground">
                 {alert.stock_symbol}
               </span>
-              <span className="rounded bg-terminal-green/10 px-1.5 py-0.5 font-mono text-[10px] font-medium text-terminal-green">
+              <span className={`rounded px-1.5 py-0.5 font-mono text-[10px] font-medium ${badgeColor}`}>
                 {alert.signal_type}
               </span>
             </div>
@@ -91,7 +101,8 @@ export function AlertsPanel() {
             </div>
           )}
         </div>
-      ))}
+        );
+      })}
     </div>
   );
 }

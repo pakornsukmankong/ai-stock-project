@@ -8,6 +8,7 @@ import { formatDate } from "@/lib/utils";
 import {
   Activity,
   ArrowUpRight,
+  ArrowDownRight,
   Bell,
   Filter,
   ChevronLeft,
@@ -15,12 +16,14 @@ import {
 } from "lucide-react";
 
 const CONFIDENCE_OPTIONS = ["All", "High", "Medium", "Low"];
+const TYPE_OPTIONS = ["All", "BUY", "SELL"] as const;
 const PER_PAGE = 20;
 
 export default function AlertsHistoryPage() {
   const [isLoading, setIsLoading] = useState(true);
   const [filterSymbol, setFilterSymbol] = useState("");
   const [filterConfidence, setFilterConfidence] = useState("All");
+  const [filterType, setFilterType] = useState<(typeof TYPE_OPTIONS)[number]>("All");
   const [alerts, setAlerts] = useState<Alert[]>([]);
   const [pagination, setPagination] = useState<PaginationMeta>({
     page: 1,
@@ -71,7 +74,8 @@ export default function AlertsHistoryPage() {
       !filterSymbol || alert.stock_symbol.toLowerCase().includes(filterSymbol.toLowerCase());
     const matchesConfidence =
       filterConfidence === "All" || alert.confidence === filterConfidence;
-    return matchesSymbol && matchesConfidence;
+    const matchesType = filterType === "All" || alert.signal_type === filterType;
+    return matchesSymbol && matchesConfidence && matchesType;
   });
 
   // Get unique symbols from current page
@@ -124,6 +128,28 @@ export default function AlertsHistoryPage() {
             className="w-40 rounded-md border border-terminal-border bg-terminal-dark px-3 py-1.5 font-mono text-xs text-foreground placeholder:text-muted-foreground focus:border-terminal-green/50 focus:outline-none"
           />
 
+          {/* Signal type filter */}
+          <div className="flex rounded-md border border-terminal-border">
+            {TYPE_OPTIONS.map((option) => {
+              const active = filterType === option;
+              const activeClass =
+                option === "SELL"
+                  ? "bg-terminal-red/10 text-terminal-red"
+                  : "bg-terminal-green/10 text-terminal-green";
+              return (
+                <button
+                  key={option}
+                  onClick={() => setFilterType(option)}
+                  className={`px-2.5 py-1.5 font-mono text-[10px] transition-all ${
+                    active ? activeClass : "text-muted-foreground hover:text-foreground"
+                  }`}
+                >
+                  {option === "All" ? "All Types" : option}
+                </button>
+              );
+            })}
+          </div>
+
           <div className="flex rounded-md border border-terminal-border">
             {CONFIDENCE_OPTIONS.map((option) => (
               <button
@@ -165,7 +191,7 @@ export default function AlertsHistoryPage() {
             <Bell className="mx-auto h-8 w-8 text-muted-foreground" />
             <p className="mt-3 font-mono text-xs text-muted-foreground">
               {pagination.total === 0
-                ? "No alerts yet. Alerts will appear here when buy signals are detected."
+                ? "No alerts yet. Alerts will appear here when buy or sell signals are detected."
                 : "No alerts match your filters."}
             </p>
           </div>
@@ -209,15 +235,23 @@ export default function AlertsHistoryPage() {
 }
 
 function AlertCard({ alert }: { alert: Alert }) {
+  const isSell = alert.signal_type === "SELL";
+  const DirIcon = isSell ? ArrowDownRight : ArrowUpRight;
+  const dirColor = isSell ? "text-terminal-red" : "text-terminal-green";
+  const badgeColor = isSell
+    ? "bg-terminal-red/10 text-terminal-red"
+    : "bg-terminal-green/10 text-terminal-green";
+  const hoverBorder = isSell ? "hover:border-terminal-red/20" : "hover:border-terminal-green/20";
+
   return (
-    <div className="rounded-lg border border-terminal-border bg-terminal-panel p-4 transition-all hover:border-terminal-green/20">
+    <div className={`rounded-lg border border-terminal-border bg-terminal-panel p-4 transition-all ${hoverBorder}`}>
       <div className="flex flex-wrap items-center justify-between gap-x-2 gap-y-1">
         <div className="flex flex-wrap items-center gap-2">
-          <ArrowUpRight className="h-3.5 w-3.5 text-terminal-green" />
+          <DirIcon className={`h-3.5 w-3.5 ${dirColor}`} />
           <span className="font-mono text-sm font-bold text-foreground">
             {alert.stock_symbol}
           </span>
-          <span className="rounded bg-terminal-green/10 px-1.5 py-0.5 font-mono text-[10px] font-medium text-terminal-green">
+          <span className={`rounded px-1.5 py-0.5 font-mono text-[10px] font-medium ${badgeColor}`}>
             {alert.signal_type}
           </span>
           {alert.confidence && (
