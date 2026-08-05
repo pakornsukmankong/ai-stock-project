@@ -3,7 +3,13 @@
 import { useEffect, useState, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
-import { alertsApi, type PerformanceStats, type PerformanceAlert, type PaginationMeta } from "@/lib/api";
+import {
+  alertsApi,
+  type PerformanceStats,
+  type PerformanceAlert,
+  type PaginationMeta,
+  type SignalTypeStats,
+} from "@/lib/api";
 import { formatDate, currencySymbolForSymbol } from "@/lib/utils";
 import { Activity, TrendingUp, TrendingDown, Target, ChevronLeft, ChevronRight, Trash2 } from "lucide-react";
 import { useToast } from "@/components/toast";
@@ -159,6 +165,18 @@ export default function PerformancePage() {
           />
         </div>
 
+        {/* Per-side win rate + return semantics note */}
+        {stats.by_type &&
+          (stats.by_type.BUY.tracked > 0 || stats.by_type.SELL.tracked > 0) && (
+            <div className="mb-4 flex flex-wrap items-center gap-x-4 gap-y-1 rounded-lg border border-terminal-border bg-terminal-panel px-4 py-2.5">
+              <SideWinRate label="BUY" stats={stats.by_type.BUY} />
+              <SideWinRate label="SELL" stats={stats.by_type.SELL} />
+              <span className="font-mono text-[10px] text-muted-foreground">
+                Return = signal performance — for a SELL, a price drop counts as positive (a good exit).
+              </span>
+            </div>
+          )}
+
         {/* Performance Table */}
         {stats.alerts.length === 0 ? (
           <div className="rounded-lg border border-terminal-border bg-terminal-panel p-12 text-center">
@@ -220,11 +238,21 @@ export default function PerformancePage() {
 }
 
 function PerformanceRow({ alert }: { alert: PerformanceAlert }) {
+  const isSell = alert.signal_type === "SELL";
   return (
     <div className="grid grid-cols-12 items-center gap-2 border-b border-terminal-border/50 px-4 py-3 last:border-0 hover:bg-terminal-dark/50">
-      <div className="col-span-2">
+      <div className="col-span-2 flex flex-wrap items-center gap-1.5">
         <span className="font-mono text-xs font-semibold text-foreground">
           {alert.stock_symbol}
+        </span>
+        <span
+          className={`rounded px-1 py-0.5 font-mono text-[9px] font-medium ${
+            isSell
+              ? "bg-terminal-red/10 text-terminal-red"
+              : "bg-terminal-green/10 text-terminal-green"
+          }`}
+        >
+          {alert.signal_type}
         </span>
       </div>
       <div className="col-span-2">
@@ -271,6 +299,21 @@ function ReturnBadge({ value }: { value: number | null }) {
       )}
       {isPositive ? "+" : ""}
       {value.toFixed(2)}%
+    </span>
+  );
+}
+
+function SideWinRate({ label, stats }: { label: string; stats: SignalTypeStats }) {
+  const isSell = label === "SELL";
+  const dot = isSell ? "text-terminal-red" : "text-terminal-green";
+  return (
+    <span className="flex items-center gap-1.5 font-mono text-[11px]">
+      <span className={dot}>●</span>
+      <span className="text-muted-foreground">{label}</span>
+      <span className="font-semibold text-foreground">
+        {stats.tracked > 0 ? `${stats.win_rate}%` : "—"}
+      </span>
+      <span className="text-muted-foreground">({stats.tracked})</span>
     </span>
   );
 }

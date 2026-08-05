@@ -207,6 +207,7 @@ export interface StockSearchResult {
 
 export interface PerformanceAlert {
   stock_symbol: string;
+  signal_type: string;
   alert_price: number | null;
   price_after_1d: number | null;
   price_after_3d: number | null;
@@ -219,12 +220,19 @@ export interface PerformanceAlert {
   confidence: string;
 }
 
+export interface SignalTypeStats {
+  tracked: number;
+  successful: number;
+  win_rate: number;
+}
+
 export interface PerformanceStats {
   total_alerts: number;
   tracked: number;
   successful: number;
   win_rate: number;
   avg_return_7d: number;
+  by_type?: { BUY: SignalTypeStats; SELL: SignalTypeStats };
   alerts: PerformanceAlert[];
   pagination: PaginationMeta;
 }
