@@ -11,7 +11,7 @@ import {
   type SignalTypeStats,
 } from "@/lib/api";
 import { formatDate, currencySymbolForSymbol } from "@/lib/utils";
-import { Activity, TrendingUp, TrendingDown, Target, ChevronLeft, ChevronRight, Trash2 } from "lucide-react";
+import { Activity, TrendingUp, TrendingDown, Target, ChevronLeft, ChevronRight, Trash2, Info } from "lucide-react";
 import { useToast } from "@/components/toast";
 
 const PER_PAGE = 20;
@@ -23,38 +23,46 @@ export default function PerformancePage() {
   const [isClearing, setIsClearing] = useState(false);
   const [showConfirm, setShowConfirm] = useState(false);
   const [page, setPage] = useState(1);
+  const [filterType, setFilterType] = useState<"All" | "BUY" | "SELL">("All");
   const router = useRouter();
 
-  const fetchPerformance = useCallback(async (pageNum: number) => {
-    try {
-      setIsLoading(true);
-      const response = await alertsApi.getPerformance(pageNum, PER_PAGE);
-      setStats(response);
-    } catch {
-      toastError("Failed to load performance data");
-    } finally {
-      setIsLoading(false);
-    }
-  }, [toastError]);
+  const fetchPerformance = useCallback(
+    async (pageNum: number, type: "All" | "BUY" | "SELL") => {
+      try {
+        setIsLoading(true);
+        const response = await alertsApi.getPerformance(
+          pageNum,
+          PER_PAGE,
+          type === "All" ? undefined : type,
+        );
+        setStats(response);
+      } catch {
+        toastError("Failed to load performance data");
+      } finally {
+        setIsLoading(false);
+      }
+    },
+    [toastError],
+  );
 
+  // Auth gate + refetch whenever the page or the type filter changes.
   useEffect(() => {
-    async function init() {
+    async function run() {
       const supabase = createClient();
       const { data: { user } } = await supabase.auth.getUser();
       if (!user) {
         router.push("/login");
         return;
       }
-      await fetchPerformance(1);
+      await fetchPerformance(page, filterType);
     }
-    init();
-  }, [router, fetchPerformance]);
+    run();
+  }, [page, filterType, router, fetchPerformance]);
 
-  useEffect(() => {
-    if (stats) {
-      fetchPerformance(page);
-    }
-  }, [page, fetchPerformance]);
+  const handleFilterChange = (type: "All" | "BUY" | "SELL") => {
+    setFilterType(type);
+    setPage(1);
+  };
 
   if (isLoading && !stats) {
     return (
@@ -95,7 +103,7 @@ export default function PerformancePage() {
       await alertsApi.clearPerformance();
       setShowConfirm(false);
       setPage(1);
-      await fetchPerformance(1);
+      await fetchPerformance(1, filterType);
       success("Performance data cleared");
     } catch {
       toastError("Failed to clear performance data");
@@ -112,6 +120,7 @@ export default function PerformancePage() {
           <div className="flex items-center gap-3">
             <Target className="h-5 w-5 text-terminal-green" />
             <h1 className="font-mono text-lg font-bold text-foreground">Performance Tracking</h1>
+            <HowToRead />
             <span className="font-mono text-xs text-muted-foreground">
               {stats.total_alerts} alerts
             </span>
@@ -177,12 +186,41 @@ export default function PerformancePage() {
             </div>
           )}
 
+        {/* Type filter */}
+        {(stats.total_alerts > 0 || filterType !== "All") && (
+        <div className="mb-3 flex items-center gap-2">
+          <span className="font-mono text-[10px] text-muted-foreground">Show:</span>
+          <div className="flex rounded-md border border-terminal-border">
+            {(["All", "BUY", "SELL"] as const).map((option) => {
+              const active = filterType === option;
+              const activeClass =
+                option === "SELL"
+                  ? "bg-terminal-red/10 text-terminal-red"
+                  : "bg-terminal-green/10 text-terminal-green";
+              return (
+                <button
+                  key={option}
+                  onClick={() => handleFilterChange(option)}
+                  className={`px-2.5 py-1.5 font-mono text-[10px] transition-all ${
+                    active ? activeClass : "text-muted-foreground hover:text-foreground"
+                  }`}
+                >
+                  {option === "All" ? "All Types" : option}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+        )}
+
         {/* Performance Table */}
         {stats.alerts.length === 0 ? (
           <div className="rounded-lg border border-terminal-border bg-terminal-panel p-12 text-center">
             <Target className="mx-auto h-8 w-8 text-muted-foreground" />
             <p className="mt-3 font-mono text-xs text-muted-foreground">
-              No performance data yet. Results will appear 1-7 days after alerts are sent.
+              {filterType === "All"
+                ? "No performance data yet. Results will appear 1-7 days after alerts are sent."
+                : `No ${filterType} alerts tracked yet.`}
             </p>
           </div>
         ) : (
@@ -234,6 +272,50 @@ export default function PerformancePage() {
         )}
       </div>
     </main>
+  );
+}
+
+function HowToRead() {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="relative">
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        aria-label="How to read this page"
+        className="text-muted-foreground transition-colors hover:text-terminal-green"
+      >
+        <Info className="h-4 w-4" />
+      </button>
+      {open && (
+        <>
+          {/* Click-outside to close */}
+          <div className="fixed inset-0 z-10" onClick={() => setOpen(false)} />
+          <div className="absolute left-0 top-6 z-20 w-72 rounded-lg border border-terminal-border bg-terminal-panel p-3 font-mono text-[10px] leading-relaxed text-muted-foreground shadow-lg">
+            <p className="mb-2 text-xs font-semibold text-foreground">How to read this</p>
+            <p className="mb-2">
+              <span className="text-foreground">Return = signal performance</span>, not
+              the raw price move. Green means the signal was right.
+            </p>
+            <ul className="mb-2 space-y-1">
+              <li>
+                <span className="text-terminal-green">● BUY</span> — green when price
+                goes <span className="text-foreground">up</span>.
+              </li>
+              <li>
+                <span className="text-terminal-red">● SELL</span> — green when price
+                goes <span className="text-foreground">down</span> (a good exit).
+              </li>
+            </ul>
+            <p className="mb-2">
+              <span className="text-foreground">Win Rate</span> = beat SPY: a BUY that
+              outperforms, or a SELL that underperforms, counts as a win.
+            </p>
+            <p>Results appear 1–7 days after each alert is sent.</p>
+          </div>
+        </>
+      )}
+    </div>
   );
 }
 
