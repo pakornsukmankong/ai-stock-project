@@ -1,4 +1,5 @@
 from datetime import datetime, timezone
+from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Depends, Query
 
@@ -98,14 +99,20 @@ async def get_alert_stats(user_id: str = Depends(get_current_user_id)):
 async def get_performance_stats(
     page: int = Query(1, ge=1),
     per_page: int = Query(20, ge=1, le=100),
+    signal_type: Optional[str] = Query(None),
     user_id: str = Depends(get_current_user_id),
 ):
-    """Get paginated performance statistics for user's alerts."""
+    """Get paginated performance statistics for user's alerts.
+
+    `signal_type` (BUY/SELL) filters only the listed rows + their pagination; the
+    summary cards and the by-type breakdown always reflect the full picture.
+    """
     try:
         supabase = get_supabase_client()
         offset = (page - 1) * per_page
+        side_filter = signal_type.upper() if signal_type and signal_type.upper() in ("BUY", "SELL") else None
 
-        # Count tracked alerts (BUY and SELL) with a captured price.
+        # Overall count (both sides) — drives the "total alerts" card.
         count_response = await db(
             supabase.table("alerts")
             .select("id", count="exact")
@@ -114,8 +121,21 @@ async def get_performance_stats(
         )
         total = count_response.count or 0
 
-        # Get paginated data
-        response = await db(
+        # Filtered count — drives pagination for the (optionally filtered) table.
+        if side_filter:
+            filtered_count_response = await db(
+                supabase.table("alerts")
+                .select("id", count="exact")
+                .eq("user_id", user_id)
+                .eq("signal_type", side_filter)
+                .not_.is_("alert_price", "null")
+            )
+            filtered_total = filtered_count_response.count or 0
+        else:
+            filtered_total = total
+
+        # Get paginated data (optionally filtered by side).
+        data_query = (
             supabase.table("alerts")
             .select(
                 "stock_symbol, signal_type, alert_price, price_after_1d, price_after_3d, "
@@ -124,8 +144,11 @@ async def get_performance_stats(
             )
             .eq("user_id", user_id)
             .not_.is_("alert_price", "null")
-            .order("sent_at", desc=True)
-            .range(offset, offset + per_page - 1)
+        )
+        if side_filter:
+            data_query = data_query.eq("signal_type", side_filter)
+        response = await db(
+            data_query.order("sent_at", desc=True).range(offset, offset + per_page - 1)
         )
 
         alerts_data = response.data
@@ -163,7 +186,7 @@ async def get_performance_stats(
                 "win_rate": round(len(side_success) / len(side_tracked) * 100, 1) if side_tracked else 0,
             }
 
-        total_pages = (total + per_page - 1) // per_page if total > 0 else 1
+        total_pages = (filtered_total + per_page - 1) // per_page if filtered_total > 0 else 1
 
         return {
             "total_alerts": total,
@@ -176,7 +199,7 @@ async def get_performance_stats(
             "pagination": {
                 "page": page,
                 "per_page": per_page,
-                "total": total,
+                "total": filtered_total,
                 "total_pages": total_pages,
                 "has_next": page < total_pages,
                 "has_prev": page > 1,

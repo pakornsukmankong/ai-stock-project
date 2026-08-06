@@ -78,9 +78,10 @@ export const alertsApi = {
   getStats: () =>
     apiRequest<{ signals_today: number }>("/alerts/stats"),
 
-  getPerformance: (page = 1, perPage = 20) =>
+  getPerformance: (page = 1, perPage = 20, signalType?: "BUY" | "SELL") =>
     apiRequest<PerformanceStats>(
-      `/alerts/performance?page=${page}&per_page=${perPage}`
+      `/alerts/performance?page=${page}&per_page=${perPage}` +
+        (signalType ? `&signal_type=${signalType}` : "")
     ),
 
   clearPerformance: () =>
