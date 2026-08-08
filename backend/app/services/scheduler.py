@@ -7,7 +7,7 @@ from app.core.config import get_settings
 from app.core.database import get_supabase_client, db
 from app.core.error_monitor import monitor
 from app.services.market_data import MarketDataService
-from app.services.markets import market_for_symbol, any_market_open, open_market_codes
+from app.services.markets import market_for_symbol, any_market_open, open_market_codes, is_etf
 from app.services.indicator_engine import IndicatorEngine
 from app.services.signal_engine import SignalEngine
 from app.services.mtf_engine import MTFEngine
@@ -274,7 +274,11 @@ class AnalysisScheduler:
                     "BUY", symbol, df, indicators, mtf_result, buy_signal, buy_score,
                     pending, symbol_watchers, recently_alerted,
                 )
-            elif sell_signal.is_sell_signal and any(w["notify_sell"] for w in symbol_watchers):
+            elif (
+                sell_signal.is_sell_signal
+                and not is_etf(symbol)  # ETFs are held, not timed — no SELL alerts (fix A)
+                and any(w["notify_sell"] for w in symbol_watchers)
+            ):
                 await self._run_ai_side(
                     "SELL", symbol, df, indicators, mtf_result, sell_signal, sell_signal.total_score,
                     pending, symbol_watchers, recently_alerted,

@@ -408,7 +408,7 @@ export default function SettingsPage() {
             />
             <Toggle
               label="Sell signals"
-              description="Alert to take profit when a run-up starts turning down."
+              description="Take-profit alert when a run-up starts turning down. Excludes broad ETFs (VOO, QQQM, SCHD, JEPQ) — those are meant to be held."
               checked={profile?.notify_sell ?? false}
               onChange={(v) => handleToggleChannel("notify_sell", v)}
             />

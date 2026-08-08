@@ -52,14 +52,16 @@ def test_macd_bearish_cross_is_a_valid_confirmation():
     assert result.is_sell_signal is True
 
 
-def test_bearish_candle_is_a_valid_confirmation():
+def test_lone_bearish_candle_is_not_enough():
+    """Fix B: a single bearish candle (no divergence / MACD cross) is too weak
+    to fire a SELL, even though it counts as a soft confirmation."""
     engine = SignalEngine()
     patterns = CandlestickPattern()
     patterns.shooting_star = True
     ind = _indicators(candle_patterns=patterns)
     result = engine.evaluate_sell_with_mtf(ind, None)
-    assert result.has_confirmation is True
-    assert result.is_sell_signal is True
+    assert result.has_confirmation is True   # candle is still a soft signal
+    assert result.is_sell_signal is False    # but not a STRONG one → no SELL
 
 
 def test_not_a_top_does_not_fire_even_with_bearish_signal():

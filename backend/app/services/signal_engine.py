@@ -5,10 +5,12 @@ from app.services.indicator_engine import IndicatorResult
 # Minimum score to trigger buy signal (out of 100)
 BUY_SIGNAL_THRESHOLD = 60
 
-# Minimum score to trigger a sell signal (out of 100). A sell ALSO requires a
-# bearish reversal confirmation (see SignalEngine.evaluate_sell) — the user chose
-# "sell at the top once it starts turning down", not "sell the moment it's high".
-SELL_SIGNAL_THRESHOLD = 60
+# Minimum score to trigger a sell signal (out of 100). Raised from 60→70 after a
+# Jan-2023→2026 backtest showed the old gate fired far too often and was wrong
+# ~60% of the time. A sell ALSO requires a STRONG bearish reversal confirmation
+# (divergence or a MACD bearish cross — not a lone stoch cross or candle); see
+# SignalEngine.evaluate_sell.
+SELL_SIGNAL_THRESHOLD = 70
 
 
 @dataclass
@@ -28,6 +30,10 @@ class SignalResult:
     trend_status: str
     support_status: str
     volume_status: str
+
+    # True when the dip shows an actual reversal tick (a leading turn-up signal),
+    # not just an oversold reading. The buy gate REQUIRES it — see _run_scoring.
+    has_reversal: bool = False
 
     # Multi-Timeframe fields
     mtf_bonus: int = 0
@@ -95,8 +101,11 @@ class SignalEngine:
             adjusted = signal.total_score + signal.mtf_bonus - signal.mtf_penalty
             signal.mtf_adjusted_score = max(0, min(adjusted, 125))
 
-            # Use adjusted score for buy signal decision
-            signal.is_buy_signal = signal.mtf_adjusted_score >= BUY_SIGNAL_THRESHOLD
+            # Use adjusted score for buy signal decision — still requires the
+            # reversal tick (fix C), so MTF can't push a still-falling dip through.
+            signal.is_buy_signal = (
+                signal.mtf_adjusted_score >= BUY_SIGNAL_THRESHOLD and signal.has_reversal
+            )
 
             # Update reasons with MTF info
             signal.reasons.extend(signal.mtf_reasons)
@@ -126,7 +135,14 @@ class SignalEngine:
 
         # Total
         total_score = trend_score + rsi_score + macd_score + volume_score + support_score
-        is_buy_signal = total_score >= BUY_SIGNAL_THRESHOLD
+
+        # Momentum/quality filter (backtest fix C): a dip is only buyable once it
+        # shows an actual turn UP — a leading reversal tick — not merely being
+        # oversold. Buying still-falling dips on strong-momentum names (AMD, TSLA,
+        # GOOGL) was the main drag on signal edge. This mirrors the AI dip-zone
+        # prompt at the rule level.
+        has_reversal = self._has_bullish_reversal(indicators)
+        is_buy_signal = total_score >= BUY_SIGNAL_THRESHOLD and has_reversal
 
         return SignalResult(
             is_buy_signal=is_buy_signal,
@@ -142,6 +158,21 @@ class SignalEngine:
             trend_status=trend_status,
             support_status=support_status,
             volume_status=volume_status,
+            has_reversal=has_reversal,
+        )
+
+    @staticmethod
+    def _has_bullish_reversal(ind: IndicatorResult) -> bool:
+        """A leading sign the dip is turning up (not just oversold)."""
+        patterns = ind.candle_patterns.get_detected()
+        bullish_candle = any(p in patterns for p in ("Hammer", "Bullish Engulfing"))
+        return bool(
+            ind.macd_bullish_cross
+            or ind.macd_turning_up
+            or ind.stoch_bullish_cross
+            or ind.rsi_bullish_divergence
+            or ind.macd_bullish_divergence
+            or bullish_candle
         )
 
     def _score_trend_context(self, ind: IndicatorResult, reasons: list) -> tuple:
@@ -461,9 +492,16 @@ class SignalEngine:
         res_score, res_status = self._score_at_resistance(ind, reasons)
 
         total_score = top_score + ob_score + rev_score + res_score
-        # A sell needs BOTH a high enough score AND a real bearish turn — this is
-        # the "wait for it to start rolling over" guard the user asked for.
-        is_sell_signal = total_score >= SELL_SIGNAL_THRESHOLD and has_confirmation
+        # A sell needs a high score AND a STRONG bearish turn. Backtest fix B:
+        # a lone stochastic cross or a single bearish candle was too weak (sells
+        # were wrong ~60% of the time); require bearish divergence OR a MACD
+        # bearish cross — the reversal signals that actually precede a top.
+        strong_confirmation = (
+            ind.rsi_bearish_divergence
+            or ind.macd_bearish_divergence
+            or ind.macd_bearish_cross
+        )
+        is_sell_signal = total_score >= SELL_SIGNAL_THRESHOLD and strong_confirmation
 
         return SellSignalResult(
             is_sell_signal=is_sell_signal,

@@ -311,7 +311,11 @@ function HowToRead() {
               <span className="text-foreground">Win Rate</span> = beat SPY: a BUY that
               outperforms, or a SELL that underperforms, counts as a win.
             </p>
-            <p>Results appear 1–7 days after each alert is sent.</p>
+            <p className="mb-2">Results appear 1–7 days after each alert is sent.</p>
+            <p className="border-t border-terminal-border pt-2 italic">
+              Signals are a timing aid — a way to not chase price — not a promise of
+              beating buy &amp; hold. In a strong bull market, holding usually wins.
+            </p>
           </div>
         </>
       )}
