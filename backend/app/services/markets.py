@@ -51,6 +51,21 @@ MARKETS: Tuple[Market, ...] = (US_MARKET, SET_MARKET)
 # Yahoo symbol suffix -> market. Extendable for other exchanges.
 _SUFFIX_MARKETS = {".BK": SET_MARKET}
 
+# Broad-market / income ETFs meant to be HELD, not timed. Backtest (Jan 2023→
+# 2026) showed sell-at-top signals on these are wrong ~60% of the time — they are
+# noise for a buy-and-hold instrument. SELL alerts are suppressed for these; BUY
+# ("add on a dip") is still allowed. Curated on purpose: we only skip tickers we
+# know are funds, so a same-named stock is never silently muted.
+ETF_SYMBOLS = frozenset({
+    "VOO", "QQQM", "QQQ", "SCHD", "JEPQ", "JEPI", "SPY", "VTI", "IVV",
+    "VIG", "VYM", "DIA", "IWM", "VT", "VXUS", "BND",
+})
+
+
+def is_etf(symbol: str) -> bool:
+    """True for curated broad-market/income ETFs that should be held, not timed."""
+    return (symbol or "").upper() in ETF_SYMBOLS
+
 
 def market_for_symbol(symbol: str) -> Market:
     """Route a ticker to its market by suffix (defaults to US)."""
