@@ -8,6 +8,7 @@ from app.core.database import get_supabase_client, db
 from app.core.error_monitor import monitor
 from app.services.market_data import MarketDataService
 from app.services.markets import market_for_symbol, any_market_open, open_market_codes, is_etf
+from app.services.market_regime import us_market_risk_off
 from app.services.indicator_engine import IndicatorEngine
 from app.services.signal_engine import SignalEngine
 from app.services.mtf_engine import MTFEngine
@@ -114,6 +115,11 @@ class AnalysisScheduler:
 
             recently_alerted = await self._get_recently_alerted()
 
+            # Broad-market regime, fetched once per cycle. SELL alerts for US
+            # symbols only fire when SPY is weak (below its 200-EMA) — backtest
+            # showed sell signals only pay off in down/volatile regimes.
+            us_risk_off = await us_market_risk_off(self.market_data)
+
             # Collect buy signals per user across the whole cycle so each user
             # receives ONE digest message instead of one push per signal.
             pending: dict[str, dict] = {}
@@ -128,7 +134,7 @@ class AnalysisScheduler:
             async def analyze(symbol: str) -> None:
                 async with semaphore:
                     await self._analyze_symbol(
-                        symbol, pending, watchers, recently_alerted
+                        symbol, pending, watchers, recently_alerted, us_risk_off
                     )
 
             await asyncio.gather(*(analyze(symbol) for symbol in symbols))
@@ -223,7 +229,8 @@ class AnalysisScheduler:
         symbol: str,
         pending: dict,
         watchers: dict[str, list[dict]],
-        recently_alerted: set[tuple[str, str]],
+        recently_alerted: set[tuple[str, str, str]],
+        us_risk_off: bool = False,
     ) -> None:
         """Run full analysis pipeline for a single stock symbol with multi-timeframe."""
         try:
@@ -277,6 +284,7 @@ class AnalysisScheduler:
             elif (
                 sell_signal.is_sell_signal
                 and not is_etf(symbol)  # ETFs are held, not timed — no SELL alerts (fix A)
+                and self._sell_allowed_in_regime(symbol, us_risk_off)  # regime gate
                 and any(w["notify_sell"] for w in symbol_watchers)
             ):
                 await self._run_ai_side(
@@ -291,6 +299,14 @@ class AnalysisScheduler:
 
         except Exception as e:
             logger.error(f"Error analyzing {symbol}: {e}")
+
+    @staticmethod
+    def _sell_allowed_in_regime(symbol: str, us_risk_off: bool) -> bool:
+        """SELL alerts for US symbols fire only in a weak market (SPY < 200-EMA).
+        Non-US markets have no regime source wired, so they're unaffected."""
+        if market_for_symbol(symbol).code == "US":
+            return us_risk_off
+        return True
 
     def _log_rule_edge(self, kind: str, symbol: str, now_active: bool, score, signal) -> None:
         """Log the (long) rule-based line only on the rising edge of a signal.
