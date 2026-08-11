@@ -6,6 +6,7 @@ import json
 from app.core.config import get_settings
 from app.core.error_monitor import monitor
 from app.services.ai_health import build_chat_request
+from app.services.company_context import CompanyContextService, CompanyContext
 from app.core.database import get_supabase_client, db
 from app.schemas.stock import StockSignalSummary, AIAnalysisResult
 
@@ -106,6 +107,20 @@ Historical Price Analysis for Dip Buying:
 - Compare current price to recent highs — a 5-15% pullback from high in uptrend = ideal dip
 - A 20%+ drop with broken EMA200 = NOT a dip, it's a trend change
 
+NEWS & FUNDAMENTALS (when a NEWS or FUNDAMENTALS section is present):
+Use them as CONTEXT to confirm or veto the technical setup — the technical dip is
+still the primary trigger; do not let a single headline override it.
+- Earnings risk: if the next earnings date is within ~5 trading days, be cautious
+  on a fresh BUY (a binary event can erase the setup) — prefer HOLD or lower the
+  confidence, and say so in the reasons.
+- A dip driven by a genuinely negative fundamental catalyst (guidance cut, fraud,
+  broken thesis) can be a VALUE TRAP, not a buyable dip — lean HOLD.
+- Strong fundamentals (durable growth, healthy margins) and/or a positive/among
+  catalyst SUPPORT buying the dip and can raise confidence.
+- If news is only generic/market-wide noise, ignore it and decide on technicals.
+- Never invent news that is not listed. If no NEWS/FUNDAMENTALS section is
+  present, decide on the technicals alone.
+
 Prefer catching the DIP over waiting for confirmation: when the uptrend is intact
 and at least one leading reversal signal appears at a pullback, say BUY. Reserve
 HOLD for when there is no reversal signal at all, or the uptrend itself is broken.
@@ -114,6 +129,7 @@ Respond ONLY with the JSON object, no other text."""
     def __init__(self) -> None:
         self.settings = get_settings()
         self.client = AsyncOpenAI(api_key=self.settings.openai_api_key)
+        self.context_service = CompanyContextService()
 
     @property
     def supabase(self):
@@ -166,9 +182,12 @@ Respond ONLY with the JSON object, no other text."""
             return None
 
     async def _call_openai(self, summary: StockSignalSummary) -> Optional[AIAnalysisResult]:
-        """Call OpenAI API with full indicator data."""
+        """Call OpenAI API with full indicator data + company news/fundamentals."""
         try:
-            user_message = self._build_indicator_message(summary)
+            # Fetched here (not in the scheduler) so it only happens on a real AI
+            # call — after the rule gate AND an analysis-cache miss. Fails open.
+            context = await self.context_service.get_context(summary.symbol)
+            user_message = self._build_indicator_message(summary, context)
 
             response = await self.client.chat.completions.create(
                 **build_chat_request(
@@ -193,7 +212,32 @@ Respond ONLY with the JSON object, no other text."""
             logger.error(f"Error calling OpenAI for {summary.symbol}: {e}")
             return None
 
-    def _build_indicator_message(self, s: StockSignalSummary) -> str:
+    def _build_context_section(self, context: Optional[CompanyContext]) -> str:
+        """Render the news + fundamentals + earnings block (omitted when empty)."""
+        if context is None or context.is_empty:
+            return ""
+
+        out = ""
+        if context.fundamentals or context.next_earnings:
+            out += "\n--- FUNDAMENTALS ---\n"
+            for label, val in context.fundamentals.items():
+                out += f"{label}: {val}\n"
+            if context.next_earnings:
+                days = (f" (~{context.days_to_earnings} trading days away)"
+                        if context.days_to_earnings is not None else "")
+                out += f"Next earnings: {context.next_earnings}{days}\n"
+
+        if context.news:
+            out += "\n--- RECENT NEWS (last 7 days) ---\n"
+            for n in context.news:
+                date = f"[{n['date']}] " if n.get("date") else ""
+                src = f" ({n['source']})" if n.get("source") else ""
+                out += f"• {date}{n['title']}{src}\n"
+        return out
+
+    def _build_indicator_message(
+        self, s: StockSignalSummary, context: Optional[CompanyContext] = None
+    ) -> str:
         """Build comprehensive indicator message for AI including MTF and historical data."""
         mtf_section = ""
         if s.mtf_trend_alignment != "not_available":
@@ -279,10 +323,12 @@ Respond ONLY with the JSON object, no other text."""
             f"Candlestick: {', '.join(s.candle_patterns) if s.candle_patterns else 'None'}\n"
             f"{mtf_section}"
             f"{weekly_section}"
-            f"{daily_section}\n"
+            f"{daily_section}"
+            f"{self._build_context_section(context)}\n"
             f"--- SIGNAL ENGINE ---\n"
             f"Reasons: {', '.join(s.signal_reasons) if s.signal_reasons else 'None'}\n\n"
-            f"Based on ALL data (indicators, multi-timeframe, AND historical price action), what is your decision: BUY, SELL, or HOLD?"
+            f"Based on ALL data (technicals, multi-timeframe, historical price action, "
+            f"and any news/fundamentals above), what is your decision: BUY, SELL, or HOLD?"
         )
 
     def _parse_ai_response(self, ai_text: str, summary: StockSignalSummary) -> Optional[AIAnalysisResult]:
