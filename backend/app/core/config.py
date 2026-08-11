@@ -31,6 +31,12 @@ class Settings(BaseSettings):
     # (e.g. gpt-4o-mini) reject the parameter outright.
     openai_reasoning_effort: Optional[str] = None
 
+    # Finnhub (https://finnhub.io) — free tier (60 req/min) supplies company
+    # fundamentals + upcoming earnings date to enrich the AI's analysis. Optional:
+    # when unset, the news section falls back to Yahoo and the fundamentals
+    # section is simply omitted (the AI still analyzes on indicators).
+    finnhub_api_key: str = ""
+
     # LINE Messaging API
     line_channel_access_token: str = ""
     line_channel_secret: str = ""
