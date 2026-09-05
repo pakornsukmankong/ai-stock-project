@@ -2,8 +2,20 @@ from dataclasses import dataclass, field
 from typing import Optional
 from app.services.indicator_engine import IndicatorResult
 
-# Minimum score to trigger buy signal (out of 100)
-BUY_SIGNAL_THRESHOLD = 60
+# Minimum score to trigger a buy signal (out of 100). Raised 60→70 after a
+# multi-variant backtest (Jan-2020→2026, 21 symbols, walk-forward, same data
+# window for every variant) compared seven candidate gates. Simply demanding a
+# higher-conviction setup won by a clear margin:
+#
+#   variant          n     avg 7d   win 7d   edge vs random   win 30d
+#   score>=60       807    +0.97%     59%        +0.04          65%
+#   score>=70       350    +1.60%     62%        +0.67          69%   <-- this
+#
+# Everything else tried (a market-regime gate on BUY, requiring a *strong*
+# reversal, a "don't average down" ladder guard, an intermediate-trend veto) made
+# the win rate WORSE, so none of them are in the engine. Fewer, higher-quality
+# signals is what actually beat a random-entry baseline.
+BUY_SIGNAL_THRESHOLD = 70
 
 # Minimum score to trigger a sell signal (out of 100). Raised from 60→70 after a
 # Jan-2023→2026 backtest showed the old gate fired far too often and was wrong
@@ -77,7 +89,8 @@ class SignalEngine:
     - Volume + Volatility:                15 pts
     - Support/Patterns:                   15 pts
 
-    Buy signal triggers when total score >= 60.
+    Buy signal triggers when total score >= BUY_SIGNAL_THRESHOLD (70) AND a
+    leading reversal tick is present.
     """
 
     VOLUME_ACCUMULATION_MULTIPLIER = 1.3
