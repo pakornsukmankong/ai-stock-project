@@ -16,7 +16,7 @@ def _dip(**overrides) -> IndicatorResult:
     ind.ema_21 = 99.0        # price at/just below EMA21 (pulled back)
     ind.ema_50 = 95.0
     ind.ema_200 = 85.0       # uptrend intact (EMA50 > EMA200, price > EMA200)
-    ind.rsi = 38.0           # pulled back
+    ind.rsi = 33.0           # a real pullback (clears the 70-point gate)
     ind.stoch_k = 18.0
     ind.stoch_d = 22.0
     ind.bb_position = "near_lower"
@@ -40,7 +40,7 @@ def test_dip_with_macd_turning_up_fires():
     engine = SignalEngine()
     result = engine.evaluate(_dip(macd_turning_up=True))
     assert result.has_reversal is True
-    assert result.total_score >= 60
+    assert result.total_score >= 70      # BUY_SIGNAL_THRESHOLD
     assert result.is_buy_signal is True
 
 
