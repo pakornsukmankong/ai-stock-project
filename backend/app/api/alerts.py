@@ -138,9 +138,9 @@ async def get_performance_stats(
         data_query = (
             supabase.table("alerts")
             .select(
-                "stock_symbol, signal_type, alert_price, price_after_1d, price_after_3d, "
-                "price_after_7d, return_1d, return_3d, return_7d, is_successful, "
-                "sent_at, confidence"
+                "stock_symbol, signal_type, alert_price, target_high, price_after_1d, "
+                "price_after_3d, price_after_7d, return_1d, return_3d, return_7d, "
+                "is_successful, sent_at, confidence"
             )
             .eq("user_id", user_id)
             .not_.is_("alert_price", "null")
@@ -158,7 +158,8 @@ async def get_performance_stats(
         # signal performance (SELL inverted), so BUY and SELL aggregate together.
         all_response = await db(
             supabase.table("alerts")
-            .select("signal_type, is_successful, return_7d")
+            .select("stock_symbol, signal_type, alert_price, target_high, "
+                    "is_successful, return_7d, sent_at")
             .eq("user_id", user_id)
             .not_.is_("alert_price", "null")
             .order("sent_at", desc=True)
@@ -174,6 +175,43 @@ async def get_performance_stats(
         returns_7d = [a["return_7d"] for a in all_data if a.get("return_7d") is not None]
         if returns_7d:
             avg_return_7d = sum(returns_7d) / len(returns_7d)
+
+        # ---- Round trips -------------------------------------------------
+        # A BUY opens a position; the next SELL on that symbol closes it. This is
+        # the unit the strategy is actually judged on: the 1d/3d/7d windows are
+        # far shorter than a real holding period (~93 trading days in backtest),
+        # so on their own they say little about whether a signal worked.
+        positions = _pair_round_trips(all_data)
+
+        # index by (symbol, sent_at) so listed rows can look up their position
+        by_entry = {(p["symbol"], p["entry_at"]): p for p in positions}
+        by_exit = {(p["symbol"], p["exit_at"]): p for p in positions if p["exit_at"]}
+
+        for row in alerts_data:
+            key = (row["stock_symbol"], row["sent_at"])
+            pos = by_entry.get(key) if row.get("signal_type") == "BUY" else by_exit.get(key)
+            if not pos:
+                row["position_status"] = None
+                continue
+            row["position_status"] = pos["status"]
+            row["entry_price"] = pos["entry_price"]
+            row["exit_price"] = pos["exit_price"]
+            row["round_trip_return"] = pos["round_trip_return"]
+            row["days_held"] = pos["days_held"]
+            if row.get("target_high") is None:
+                row["target_high"] = pos["target_high"]
+
+        closed = [p for p in positions if p["status"] == "closed"]
+        open_positions = [p for p in positions if p["status"] == "open"]
+        rt_returns = [p["round_trip_return"] for p in closed if p["round_trip_return"] is not None]
+        round_trip = {
+            "closed": len(closed),
+            "open": len(open_positions),
+            "win_rate": round(
+                sum(1 for r in rt_returns if r > 0) / len(rt_returns) * 100, 1
+            ) if rt_returns else 0,
+            "avg_return": round(sum(rt_returns) / len(rt_returns), 2) if rt_returns else 0,
+        }
 
         # Per-side breakdown so the UI can show BUY vs SELL win rates separately.
         by_type = {}
@@ -195,6 +233,7 @@ async def get_performance_stats(
             "win_rate": round(win_rate, 1),
             "avg_return_7d": round(avg_return_7d, 2),
             "by_type": by_type,
+            "round_trip": round_trip,
             "alerts": alerts_data,
             "pagination": {
                 "page": page,
@@ -209,6 +248,64 @@ async def get_performance_stats(
     except Exception as e:
         monitor.log_error("alerts.performance", str(e))
         raise HTTPException(status_code=500, detail="Failed to load performance stats")
+
+
+
+def _pair_round_trips(alerts: list) -> list:
+    """Pair each BUY with the SELL that closed it, per symbol.
+
+    `alerts` arrives newest-first; walking it oldest-first mirrors how positions
+    actually opened and closed. A BUY while one is already open is ignored (the
+    scheduler only takes one position at a time per symbol), and a SELL with no
+    open BUY is skipped — it cannot close anything.
+    """
+    positions: list = []
+    open_by_symbol: dict = {}
+
+    for row in sorted(alerts, key=lambda r: r.get("sent_at") or ""):
+        symbol = row.get("stock_symbol")
+        side = row.get("signal_type", "BUY")
+        price = row.get("alert_price")
+        if not symbol or price is None:
+            continue
+
+        if side == "BUY":
+            if symbol not in open_by_symbol:
+                open_by_symbol[symbol] = {
+                    "symbol": symbol,
+                    "entry_price": float(price),
+                    "entry_at": row.get("sent_at"),
+                    "target_high": float(row["target_high"]) if row.get("target_high") else None,
+                    "exit_price": None,
+                    "exit_at": None,
+                    "status": "open",
+                    "round_trip_return": None,
+                    "days_held": None,
+                }
+        elif side == "SELL":
+            pos = open_by_symbol.pop(symbol, None)
+            if not pos:
+                continue
+            pos["exit_price"] = float(price)
+            pos["exit_at"] = row.get("sent_at")
+            pos["status"] = "closed"
+            pos["round_trip_return"] = round(
+                (pos["exit_price"] / pos["entry_price"] - 1) * 100, 2
+            )
+            pos["days_held"] = _days_between(pos["entry_at"], pos["exit_at"])
+            positions.append(pos)
+
+    positions.extend(open_by_symbol.values())
+    return positions
+
+
+def _days_between(start: str, end: str):
+    try:
+        a = datetime.fromisoformat(start.replace("Z", "+00:00"))
+        b = datetime.fromisoformat(end.replace("Z", "+00:00"))
+        return max(0, (b - a).days)
+    except Exception:
+        return None
 
 
 @router.get("/recent")

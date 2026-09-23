@@ -210,6 +210,15 @@ export interface PerformanceAlert {
   stock_symbol: string;
   signal_type: string;
   alert_price: number | null;
+  /** Take-profit target captured when the BUY fired. */
+  target_high: number | null;
+  /** "open" | "closed" for the round trip this alert belongs to. */
+  position_status: string | null;
+  entry_price?: number | null;
+  exit_price?: number | null;
+  /** Realised gain from entry to exit, once the position closed. */
+  round_trip_return?: number | null;
+  days_held?: number | null;
   price_after_1d: number | null;
   price_after_3d: number | null;
   price_after_7d: number | null;
@@ -227,6 +236,13 @@ export interface SignalTypeStats {
   win_rate: number;
 }
 
+export interface RoundTripStats {
+  closed: number;
+  open: number;
+  win_rate: number;
+  avg_return: number;
+}
+
 export interface PerformanceStats {
   total_alerts: number;
   tracked: number;
@@ -234,6 +250,7 @@ export interface PerformanceStats {
   win_rate: number;
   avg_return_7d: number;
   by_type?: { BUY: SignalTypeStats; SELL: SignalTypeStats };
+  round_trip?: RoundTripStats;
   alerts: PerformanceAlert[];
   pagination: PaginationMeta;
 }
