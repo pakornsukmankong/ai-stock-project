@@ -408,7 +408,7 @@ export default function SettingsPage() {
             />
             <Toggle
               label="Sell signals"
-              description="Take-profit alert, sent only while the broad market is weak (S&P 500 below its 200-day average) — that's when exits pay off. Rare by design; excludes broad ETFs, which are meant to be held."
+              description="Take-profit alert: fires when a stock you watch climbs back to the previous high it fell from — the natural point to consider locking in the gain. Excludes broad ETFs, which are meant to be held."
               checked={profile?.notify_sell ?? false}
               onChange={(v) => handleToggleChannel("notify_sell", v)}
             />

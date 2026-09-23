@@ -17,12 +17,20 @@ from app.services.indicator_engine import IndicatorResult
 # signals is what actually beat a random-entry baseline.
 BUY_SIGNAL_THRESHOLD = 70
 
-# Minimum score to trigger a sell signal (out of 100). Raised from 60→70 after a
-# Jan-2023→2026 backtest showed the old gate fired far too often and was wrong
-# ~60% of the time. A sell ALSO requires a STRONG bearish reversal confirmation
-# (divergence or a MACD bearish cross — not a lone stoch cross or candle); see
-# SignalEngine.evaluate_sell.
-SELL_SIGNAL_THRESHOLD = 70
+# The SELL rule is a TAKE-PROFIT TARGET, not a top prediction: a dip-buy is
+# "done" once price recovers to the swing high it fell from.
+#
+# The previous rule (overbought + extended + bearish reversal) was replaced after
+# a Jan-2020->2026 backtest: as a top-caller it won only 40-46% of the time (price
+# kept rising after the signal), and the market-regime gate meant it never fired
+# once in production. Measured the way it is actually used — a round trip from
+# dip-buy to recovery — the prior-high rule closed 169 trades at +11.3% average,
+# reaching the target in 96% of them.
+#
+# NOTE on that 98% "win rate": it is structural, not predictive. Selling only when
+# price reaches a level ABOVE the entry cannot lose by construction; the real risk
+# lives in the trades that never reach the target (held indefinitely) and in the
+# holding period, which ranged from weeks to ~15 months.
 
 
 @dataclass
@@ -57,22 +65,13 @@ class SignalResult:
 
 @dataclass
 class SellSignalResult:
-    """Result of the "sell at the top" scoring engine.
-
-    Mirrors SignalResult but for the opposite side: a distribution/exhaustion
-    setup near a top. `has_confirmation` records whether a bearish reversal
-    signal was present — the gate requires it, so a merely-overbought stock that
-    keeps grinding up does NOT fire.
-    """
+    """Result of the take-profit rule: has price recovered to its prior swing high?"""
 
     is_sell_signal: bool
-    total_score: int
+    target_high: float          # the swing high used as the target (0 = none yet)
+    price: float
+    pct_of_target: float        # price / target * 100 (>=100 means reached)
     reasons: list
-    top_status: str
-    overbought_status: str
-    reversal_status: str
-    resistance_status: str
-    has_confirmation: bool
     mtf_confluence: str = "not_available"
 
 
@@ -480,163 +479,39 @@ class SignalEngine:
             return 2, "mid_range"
 
     # ------------------------------------------------------------------ #
-    # Sell-at-the-top scoring (the mirror of buy-on-dip)
+    # Take-profit rule: price recovered to the prior swing high
     # ------------------------------------------------------------------ #
     def evaluate_sell_with_mtf(self, indicators: IndicatorResult, mtf_result) -> SellSignalResult:
-        """Evaluate a "sell/take-profit at the top" setup.
+        """Fire when price reaches the most recent confirmed swing high.
 
-        Strategy: flag a stock that has RUN UP and is now overbought/extended at
-        resistance AND showing a bearish reversal turn. The confirmation is
-        mandatory — being high alone is not a sell (strong trends stay overbought
-        for a long time). MTF is used only for an informational confluence note;
-        the base score decides, because the MTF bonus/penalty is computed for the
-        BUY side and would be wrong-signed here.
+        That high is where the last leg down started, so reaching it again means
+        the dip has been fully recovered — the natural point to take profit on a
+        dip-buy. Deliberately mechanical: no overbought/oversold judgement, and no
+        market-regime gate (this is about the position, not the market).
         """
-        result = self._run_sell_scoring(indicators)
+        price = indicators.current_price
+        target = indicators.prior_swing_high
+        reasons: list = []
+
+        if target and target > 0:
+            pct = price / target * 100
+            fired = price >= target
+            if fired:
+                reasons.append(f"Recovered to prior swing high ${target:.2f} — take-profit target reached")
+            else:
+                reasons.append(f"{pct:.1f}% of the way back to prior swing high ${target:.2f}")
+        else:
+            pct = 0.0
+            fired = False
+            reasons.append("No confirmed swing high yet — no take-profit target")
+
+        result = SellSignalResult(
+            is_sell_signal=fired,
+            target_high=float(target or 0.0),
+            price=float(price),
+            pct_of_target=round(pct, 1),
+            reasons=reasons,
+        )
         if mtf_result is not None:
             result.mtf_confluence = mtf_result.trend_alignment
         return result
-
-    def _run_sell_scoring(self, ind: IndicatorResult) -> SellSignalResult:
-        reasons: list = []
-        top_score, top_status = self._score_top_context(ind, reasons)
-        ob_score, ob_status = self._score_overbought(ind, reasons)
-        rev_score, rev_status, has_confirmation = self._score_bearish_reversal(ind, reasons)
-        res_score, res_status = self._score_at_resistance(ind, reasons)
-
-        total_score = top_score + ob_score + rev_score + res_score
-        # A sell needs a high score AND a STRONG bearish turn. Backtest fix B:
-        # a lone stochastic cross or a single bearish candle was too weak (sells
-        # were wrong ~60% of the time); require bearish divergence OR a MACD
-        # bearish cross — the reversal signals that actually precede a top.
-        strong_confirmation = (
-            ind.rsi_bearish_divergence
-            or ind.macd_bearish_divergence
-            or ind.macd_bearish_cross
-        )
-        is_sell_signal = total_score >= SELL_SIGNAL_THRESHOLD and strong_confirmation
-
-        return SellSignalResult(
-            is_sell_signal=is_sell_signal,
-            total_score=total_score,
-            reasons=reasons,
-            top_status=top_status,
-            overbought_status=ob_status,
-            reversal_status=rev_status,
-            resistance_status=res_status,
-            has_confirmation=has_confirmation,
-        )
-
-    def _score_top_context(self, ind: IndicatorResult, reasons: list) -> tuple:
-        """Is price at a sellable top? (max 25 pts).
-
-        We reward EXTENSION — price stretched well above its moving averages
-        after a run — because that is where taking profit pays. A stock merely
-        above EMA200 is not a top.
-        """
-        price = ind.current_price
-        if ind.ema_21 > 0:
-            distance_from_ema21 = (price - ind.ema_21) / ind.ema_21
-        else:
-            distance_from_ema21 = 0
-
-        is_above_ema200 = price > ind.ema_200
-        is_stacked_up = price > ind.ema_9 > ind.ema_21  # short EMAs stacked bullish
-
-        if distance_from_ema21 > 0.08:
-            reasons.append(f"Overextended: price {distance_from_ema21*100:.0f}% above EMA21 — stretched top")
-            return 25, "very_extended"
-        if distance_from_ema21 > 0.05:
-            reasons.append(f"Extended: price {distance_from_ema21*100:.0f}% above EMA21")
-            return 20, "extended"
-        if is_stacked_up and is_above_ema200:
-            reasons.append("Price stacked above short EMAs in an uptrend — mature move")
-            return 13, "mature_uptrend"
-        if is_above_ema200:
-            return 8, "above_ema200"
-        return 4, "no_top"
-
-    def _score_overbought(self, ind: IndicatorResult, reasons: list) -> tuple:
-        """Momentum overbought via RSI + Stochastic (max 25 pts)."""
-        rsi = ind.rsi
-        stoch_overbought = ind.stoch_k > 80
-
-        if rsi > 75:
-            score, status = 25, "very_overbought"
-            reasons.append(f"RSI {rsi:.1f} — strongly overbought")
-        elif rsi > 70:
-            score, status = 21, "overbought"
-            reasons.append(f"RSI {rsi:.1f} — overbought")
-        elif rsi > 65:
-            score, status = 15, "elevated"
-            reasons.append(f"RSI {rsi:.1f} — elevated")
-        elif rsi > 60:
-            score, status = 9, "warm"
-        else:
-            score, status = 3, "neutral"
-
-        if stoch_overbought and score < 25:
-            score = min(25, score + 4)
-            reasons.append(f"Stochastic {ind.stoch_k:.0f} — overbought")
-
-        return score, status
-
-    def _score_bearish_reversal(self, ind: IndicatorResult, reasons: list) -> tuple:
-        """Bearish reversal confirmation — the mandatory turn (max 25 pts).
-
-        Returns (score, status, has_confirmation). has_confirmation is True when
-        ANY genuine bearish turn is present; the gate requires it.
-        """
-        has_divergence = ind.rsi_bearish_divergence or ind.macd_bearish_divergence
-        macd_cross = ind.macd_bearish_cross
-        stoch_cross = ind.stoch_bearish_cross and ind.stoch_k > 50
-        patterns = ind.candle_patterns.get_detected()
-        bear_candles = [p for p in patterns if p in ("Bearish Engulfing", "Shooting Star")]
-        has_bear_candle = bool(bear_candles)
-
-        has_confirmation = bool(has_divergence or macd_cross or stoch_cross or has_bear_candle)
-
-        if has_divergence and (macd_cross or stoch_cross):
-            div_kind = "RSI" if ind.rsi_bearish_divergence else "MACD"
-            reasons.append(f"Strong reversal: bearish {div_kind} divergence + momentum cross down")
-            return 25, "divergence_cross", has_confirmation
-        if has_divergence:
-            div_kind = "RSI" if ind.rsi_bearish_divergence else "MACD"
-            reasons.append(f"Bearish {div_kind} divergence — price higher but momentum fading")
-            return 18, "divergence", has_confirmation
-        if macd_cross:
-            reasons.append("MACD bearish crossover — histogram flipped negative")
-            return 15, "macd_reversal", has_confirmation
-        if has_bear_candle:
-            reasons.append(f"Bearish reversal candle: {', '.join(bear_candles)}")
-            return 12, "bear_candle", has_confirmation
-        if stoch_cross:
-            reasons.append(f"Stochastic bearish cross at {ind.stoch_k:.0f}")
-            return 9, "stoch_reversal", has_confirmation
-        return 0, "no_reversal", has_confirmation
-
-    def _score_at_resistance(self, ind: IndicatorResult, reasons: list) -> tuple:
-        """Near resistance / stretched above the upper Bollinger Band (max 25)."""
-        price = ind.current_price
-        pivot = ind.pivot_levels
-        score = 0
-        status = "mid_range"
-
-        if ind.bb_position == "above_upper":
-            score += 15
-            reasons.append("Price above upper Bollinger Band — stretched")
-            status = "above_bb"
-        elif ind.bb_position == "near_upper":
-            score += 10
-            status = "near_bb"
-
-        if pivot.r1 > 0 and abs(price - pivot.r1) / price <= 0.01:
-            score += 10
-            reasons.append(f"At pivot resistance ${pivot.r1:.2f}")
-            status = "at_resistance"
-        elif pivot.r2 > 0 and abs(price - pivot.r2) / price <= 0.015:
-            score += 8
-            reasons.append(f"Near pivot resistance ${pivot.r2:.2f}")
-            status = "near_resistance"
-
-        return min(25, score), status

@@ -26,13 +26,10 @@ def _signal(is_buy=True):
 
 
 def _no_sell():
-    """A non-firing sell result, so these buy-focused tests never take the
-    SELL branch."""
+    """A non-firing take-profit result (price still below its target)."""
     return SimpleNamespace(
-        is_sell_signal=False,
-        total_score=0,
-        reasons=[],
-        mtf_confluence="n/a",
+        is_sell_signal=False, target_high=100.0, price=92.0,
+        pct_of_target=92.0, reasons=[], mtf_confluence="n/a",
     )
 
 
@@ -144,9 +141,9 @@ async def test_cooldown_blocks_repeat_alert(monkeypatch):
 
 def _sell(is_sell=True):
     return SimpleNamespace(
-        is_sell_signal=is_sell,
-        total_score=72,
-        reasons=["overbought + bearish divergence"],
+        is_sell_signal=is_sell, target_high=100.0, price=101.0,
+        pct_of_target=101.0,
+        reasons=["Recovered to prior swing high $100.00 — take-profit target reached"],
         mtf_confluence="n/a",
     )
 
@@ -185,25 +182,10 @@ async def test_ai_sell_queues_alert_when_opted_in(monkeypatch):
     sch = _build_sell_scheduler(monkeypatch, analysis=sell)
     pending = {}
 
-    # us_risk_off=True → weak market → SELL allowed.
-    await sch._analyze_symbol("AMZN", pending, _sell_watchers(True), set(), True)
+    await sch._analyze_symbol("AMZN", pending, _sell_watchers(True), set())
 
     assert "u1" in pending
     assert pending["u1"]["items"][0]["analysis"].action == "SELL"
-
-
-@pytest.mark.asyncio
-async def test_sell_suppressed_in_bull_regime(monkeypatch):
-    """Regime gate: a US SELL is suppressed while SPY is strong (us_risk_off=False),
-    even with a firing sell signal and an opted-in watcher."""
-    sell = SimpleNamespace(action="SELL", confidence="High", summary="top", reasons=["x"])
-    sch = _build_sell_scheduler(monkeypatch, analysis=sell)
-    pending = {}
-
-    await sch._analyze_symbol("AMZN", pending, _sell_watchers(True), set(), False)
-
-    assert pending == {}
-    sch.ai_service.analyze.assert_not_awaited()  # gate blocks before the AI call
 
 
 @pytest.mark.asyncio
@@ -227,7 +209,7 @@ async def test_sell_cooldown_is_independent_of_buy(monkeypatch):
     pending = {}
 
     # Only the BUY side is on cooldown; the SELL should still go through (weak regime).
-    await sch._analyze_symbol("AMZN", pending, _sell_watchers(True), {("u1", "AMZN", "BUY")}, True)
+    await sch._analyze_symbol("AMZN", pending, _sell_watchers(True), {("u1", "AMZN", "BUY")})
 
     assert "u1" in pending
 
