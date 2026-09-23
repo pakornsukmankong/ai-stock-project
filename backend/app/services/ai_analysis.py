@@ -85,21 +85,22 @@ HOLD criteria (the dip is NOT buyable yet):
   weekly trend has turned down) — that is a trend change, not a dip. This is the
   falling-knife guard: skip it.
 
-SELL criteria — TAKE PROFIT AT THE TOP (a positive exit signal, not just "avoid"):
-Say SELL when the stock has RUN UP and is now rolling over. Require BOTH:
-- Overbought / extended: RSI > 65-70, or price >5% above EMA21, at/above the
-  upper Bollinger Band, or at pivot resistance (R1/R2)
-- AND a bearish reversal TURN — at least one of: bearish RSI/MACD divergence
-  (price higher high, momentum lower high), MACD bearish crossover (histogram
-  flipped negative), or a bearish reversal candle (Bearish Engulfing, Shooting
-  Star)
-Overbought ALONE is not a SELL — strong trends stay overbought for a long time.
-It becomes a SELL only once momentum starts to fade/turn. This mirrors the BUY
-dip-zone logic on the opposite side.
+SELL criteria — TAKE-PROFIT TARGET REACHED:
+You are only asked about SELL when price has ALREADY recovered to its most recent
+prior swing high — the level the last decline started from. The mechanical target
+is hit; your job is to confirm taking profit, or to veto it when the evidence
+clearly says this is a breakout worth holding.
 
-AVOID (still HOLD, not SELL):
-- At 52-week highs but momentum still rising with no bearish turn (let it run)
-- A single overbought reading with no divergence or cross
+Default to SELL when the target is reached. Answer HOLD instead only when:
+- Decisive breakout: price closed well ABOVE the prior high on clearly
+  above-average volume with momentum still expanding (MACD rising, no bearish
+  divergence) — the old high has become support, not a ceiling.
+- A strong fundamental catalyst in the news re-rates the stock (earnings beat,
+  guidance raise) and the move has room to run.
+
+Do NOT require overbought readings or a bearish reversal — this is a profit
+target, not a top call. Do NOT answer SELL for a stock that has not reached its
+target; if the data shows price below the prior swing high, answer HOLD.
 
 Historical Price Analysis for Dip Buying:
 - Use WEEKLY candles to identify: is this a dip within an uptrend, or a breakdown?

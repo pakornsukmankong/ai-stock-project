@@ -96,6 +96,10 @@ class IndicatorResult:
 
     # Market Structure - Pivot Points
     pivot_levels: PivotLevels = field(default_factory=PivotLevels)
+    # Most recent CONFIRMED swing high (pivot high). Used as the take-profit
+    # target: a dip-buy is 'done' once price recovers to the high it fell from.
+    # 0.0 when no pivot has formed yet in the window.
+    prior_swing_high: float = 0.0
 
     # --- Reversal transition signals (evaluated on CLOSED bars) ---
     # The engine runs intraday, so iloc[-1] is a forming candle. These flags are
@@ -159,6 +163,9 @@ class IndicatorEngine:
 
             # D. Reversal transitions (crosses + divergence)
             self._detect_reversal_signals(df, result)
+
+            # E. Most recent confirmed swing high — the take-profit target.
+            self._detect_prior_swing_high(df, result)
 
             # Legacy support/resistance for signal engine
             result.support_level = result.pivot_levels.s1
@@ -463,3 +470,17 @@ class IndicatorEngine:
             if vals[i] == np.nanmax(window) and vals[i] > vals[i - 1] and vals[i] > vals[i + 1]:
                 pivots.append(i)
         return pivots
+
+    def _detect_prior_swing_high(self, df: pd.DataFrame, result: IndicatorResult) -> None:
+        """Set `prior_swing_high` to the latest CONFIRMED pivot high.
+
+        `_pivot_highs` only scans up to len-PIVOT_RIGHT, so a pivot is never used
+        before the bars that confirm it have closed — no lookahead.
+        """
+        try:
+            highs = df["high"]
+            pivots = self._pivot_highs(highs)
+            if pivots:
+                result.prior_swing_high = float(highs.iloc[pivots[-1]])
+        except Exception:
+            result.prior_swing_high = 0.0

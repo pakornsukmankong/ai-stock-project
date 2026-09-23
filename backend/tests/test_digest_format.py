@@ -23,7 +23,7 @@ def _item(symbol, action):
 def test_single_item_uses_action_label():
     svc = LineNotificationService()
     msg = svc.format_digest([_item("AMZN", "SELL")])
-    assert "SELL SIGNAL: AMZN" in msg
+    assert "TAKE PROFIT: AMZN" in msg
 
 
 def test_mixed_digest_groups_buy_and_sell_sections():
@@ -32,8 +32,8 @@ def test_mixed_digest_groups_buy_and_sell_sections():
         [_item("AMZN", "BUY"), _item("LLY", "SELL"), _item("NVDA", "BUY")]
     )
     assert "🚀 BUY SIGNALS (2)" in msg
-    assert "🔴 SELL SIGNALS (1)" in msg
+    assert "🎯 TAKE PROFIT (1)" in msg
     # BUY section comes before SELL section.
-    assert msg.index("BUY SIGNALS") < msg.index("SELL SIGNALS")
+    assert msg.index("BUY SIGNALS") < msg.index("TAKE PROFIT")
     for sym in ("AMZN", "LLY", "NVDA"):
         assert sym in msg

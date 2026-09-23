@@ -240,13 +240,19 @@ class LineNotificationService:
     def _format_message(self, analysis: AIAnalysisResult, price: float) -> str:
         """Format a single-signal alert message."""
         reasons_text = "\n".join(f"• {reason}" for reason in analysis.reasons)
-        action_emoji = {"BUY": "🚀", "SELL": "🔴", "HOLD": "⏸️"}.get(analysis.action, "📊")
+        # SELL is a take-profit target being reached, not a "get out" warning —
+        # the wording says so, otherwise the alert reads as a crash alarm.
+        emoji, label = {
+            "BUY": ("🚀", "BUY SIGNAL"),
+            "SELL": ("🎯", "TAKE PROFIT"),
+            "HOLD": ("⏸️", "HOLD"),
+        }.get(analysis.action, ("📊", analysis.action))
         # Currency + timestamp follow the stock's own exchange (US → $/ET,
         # Thai .BK → ฿/ICT), not a hardcoded US assumption.
         market = market_for_symbol(analysis.symbol)
 
         return (
-            f"{action_emoji} {analysis.action} SIGNAL: {analysis.symbol}\n"
+            f"{emoji} {label}: {analysis.symbol}\n"
             f"━━━━━━━━━━━━━━━\n"
             f"💰 Price: {market.currency_symbol}{price:.2f}\n"
             f"📊 Confidence: {analysis.confidence}\n"
@@ -259,7 +265,7 @@ class LineNotificationService:
         )
 
     # Section headers per signal type in a multi-signal digest.
-    _SECTION = {"BUY": "🚀 BUY SIGNALS", "SELL": "🔴 SELL SIGNALS"}
+    _SECTION = {"BUY": "🚀 BUY SIGNALS", "SELL": "🎯 TAKE PROFIT"}
 
     def format_digest(self, items: list[dict]) -> str:
         """Combine multiple signals for one user into a single message.
