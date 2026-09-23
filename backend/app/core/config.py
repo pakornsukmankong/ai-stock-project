@@ -57,8 +57,12 @@ class Settings(BaseSettings):
     # cycle. The AI is still consulted each cycle (throttled by the analysis
     # cache), so a HOLD that flips to BUY notifies as soon as the cooldown allows.
     alert_cooldown_hours: int = 24
-    # How long alerts are kept before the cleanup job deletes them.
-    alerts_retention_days: int = 30
+    # How long alerts are kept before the cleanup job deletes them. Must outlive
+    # a typical holding period: SELL is a take-profit paired against the BUY that
+    # opened the position, and the backtest saw positions run from weeks to ~15
+    # months before hitting their target. Deleting the BUY early would orphan the
+    # SELL. Alerts are tiny (a few hundred rows), so a long window is cheap.
+    alerts_retention_days: int = 730
 
     # Analysis pipeline
     # Symbols analyzed concurrently per cycle. Bounded so a large watchlist does

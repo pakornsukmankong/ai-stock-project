@@ -1,5 +1,6 @@
 import logging
 import asyncio
+from types import SimpleNamespace
 from datetime import datetime, timezone, timedelta
 from functools import lru_cache
 from app.core.logging_config import local_now
@@ -16,6 +17,10 @@ from app.services.line_notification import LineNotificationService, MONTHLY_LIMI
 from app.schemas.stock import StockSignalSummary
 
 logger = logging.getLogger(__name__)
+
+# Rows scanned to work out which positions are still open. Alerts are few
+# (one per user/symbol/side at most per day), so this covers a long history.
+OPEN_POSITION_SCAN_LIMIT = 5000
 
 
 class AnalysisScheduler:
@@ -114,6 +119,8 @@ class AnalysisScheduler:
                 return
 
             recently_alerted = await self._get_recently_alerted()
+            # Positions the user was told to open — SELL is a take-profit on these.
+            open_buys = await self._get_open_buy_positions()
 
             # Collect buy signals per user across the whole cycle so each user
             # receives ONE digest message instead of one push per signal.
@@ -129,7 +136,7 @@ class AnalysisScheduler:
             async def analyze(symbol: str) -> None:
                 async with semaphore:
                     await self._analyze_symbol(
-                        symbol, pending, watchers, recently_alerted
+                        symbol, pending, watchers, recently_alerted, open_buys
                     )
 
             await asyncio.gather(*(analyze(symbol) for symbol in symbols))
@@ -219,12 +226,49 @@ class AnalysisScheduler:
             # re-alert users who are still inside their cooldown window.
             raise
 
+    async def _get_open_buy_positions(self) -> dict:
+        """Map (user_id, symbol) -> take-profit target for every OPEN position.
+
+        A position is open when the user's latest alert for that symbol was a BUY.
+        The target is the swing high recorded when that BUY fired — frozen, not
+        re-read each cycle: a moving target drifts down during the dip and exits
+        far too early (+3.9%/78% win vs +12.8%/97% frozen, Jan-2020->2026).
+
+        A take-profit alert is only meaningful for a position you were told to
+        enter, so SELL is paired against this set. Without the pairing the rule
+        fires on any stock reclaiming its prior high — 8x more alerts than the
+        paired round trip that was actually backtested.
+
+        Fails closed (empty set -> no SELL alerts) rather than spamming.
+        """
+        try:
+            response = await db(
+                self.supabase.table("alerts")
+                .select("user_id, stock_symbol, signal_type, sent_at, target_high")
+                .order("sent_at", desc=True)
+                .limit(OPEN_POSITION_SCAN_LIMIT)
+            )
+            latest: dict = {}
+            for row in response.data:          # newest first
+                key = (row["user_id"], row["stock_symbol"])
+                if key not in latest:
+                    latest[key] = row
+            return {
+                k: float(r["target_high"])
+                for k, r in latest.items()
+                if r.get("signal_type", "BUY") == "BUY" and r.get("target_high")
+            }
+        except Exception as e:
+            logger.error(f"Error fetching open positions: {e}")
+            return {}
+
     async def _analyze_symbol(
         self,
         symbol: str,
         pending: dict,
         watchers: dict[str, list[dict]],
         recently_alerted: set[tuple[str, str, str]],
+        open_buys: set = frozenset(),
     ) -> None:
         """Run full analysis pipeline for a single stock symbol with multi-timeframe."""
         try:
@@ -261,9 +305,24 @@ class AnalysisScheduler:
             buy_score = buy_signal.mtf_adjusted_score if mtf_result else buy_signal.total_score
             self._log_rule_edge("BUY", symbol, buy_signal.is_buy_signal, buy_score, buy_signal)
 
-            sell_signal = self.signal_engine.evaluate_sell_with_mtf(indicators, mtf_result)
-            self._log_rule_edge("SELL", symbol, sell_signal.is_sell_signal,
-                                sell_signal.pct_of_target, sell_signal)
+            # Take-profit: has price reached the target frozen when each holder's
+            # BUY fired? Targets are per-user, so a symbol can be "done" for one
+            # holder and not another.
+            price = indicators.current_price
+            targets = {
+                w["user_id"]: open_buys[(w["user_id"], symbol)]
+                for w in symbol_watchers
+                if (w["user_id"], symbol) in open_buys
+            }
+            reached = {u: t for u, t in targets.items() if t and price >= t}
+            sell_fires = bool(reached)
+            if targets:
+                nearest = min(targets.values())
+                self._log_rule_edge(
+                    "SELL", symbol, sell_fires, price / nearest * 100,
+                    SimpleNamespace(target_high=nearest,
+                                    reasons=[f"{len(reached)}/{len(targets)} holder(s) at target"]),
+                )
 
             # Step 5: Decide which side (if any) to send to the AI. BUY and SELL
             # setups are near mutually exclusive (a dip vs an overbought top), but
@@ -274,19 +333,25 @@ class AnalysisScheduler:
             if buy_signal.is_buy_signal:
                 await self._run_ai_side(
                     "BUY", symbol, df, indicators, mtf_result, buy_signal, buy_score,
-                    pending, symbol_watchers, recently_alerted,
+                    pending, symbol_watchers, recently_alerted, open_buys,
                 )
             elif (
-                sell_signal.is_sell_signal
+                sell_fires
                 and not is_etf(symbol)  # ETFs are held, not traded around
-                and any(w["notify_sell"] for w in symbol_watchers)
+                and any(w["notify_sell"] and w["user_id"] in reached for w in symbol_watchers)
             ):
                 # No market-regime gate here: a take-profit target is about the
                 # position, not the market. (The old sell-at-top rule needed one
                 # and still never fired — see signal_engine's SELL notes.)
+                target_signal = SimpleNamespace(
+                    reasons=[f"Reached take-profit target ${min(reached.values()):.2f} "
+                             f"(the swing high when the buy signal fired)"],
+                    mtf_confluence="not_available",
+                )
                 await self._run_ai_side(
-                    "SELL", symbol, df, indicators, mtf_result, sell_signal,
-                    sell_signal.pct_of_target, pending, symbol_watchers, recently_alerted,
+                    "SELL", symbol, df, indicators, mtf_result, target_signal,
+                    round(price / min(reached.values()) * 100), pending, symbol_watchers,
+                    recently_alerted, reached,
                 )
             else:
                 # Neither side actionable — drop any remembered AI verdicts so a
@@ -320,7 +385,7 @@ class AnalysisScheduler:
 
     async def _run_ai_side(
         self, kind, symbol, df, indicators, mtf_result, signal, score,
-        pending, symbol_watchers, recently_alerted,
+        pending, symbol_watchers, recently_alerted, open_buys=frozenset(),
     ) -> None:
         """Send one side's signal to the AI and, if it agrees, queue the alert."""
         summary = self._build_summary(symbol, df, indicators, mtf_result, signal, score, kind)
@@ -348,7 +413,8 @@ class AnalysisScheduler:
 
         self._collect_users(
             symbol, analysis, indicators.current_price, pending,
-            symbol_watchers, recently_alerted, kind,
+            symbol_watchers, recently_alerted, kind, open_buys,
+            indicators.prior_swing_high if kind == "BUY" else None,
         )
 
     def _build_summary(self, symbol, df, indicators, mtf_result, signal, score, kind) -> StockSignalSummary:
@@ -477,6 +543,8 @@ class AnalysisScheduler:
         watchers: list[dict],
         recently_alerted: set[tuple[str, str, str]],
         kind: str,
+        open_buys=frozenset(),
+        target_high: float = None,
     ) -> None:
         """Queue this signal for every eligible user into the per-user digest buckets.
 
@@ -500,6 +568,14 @@ class AnalysisScheduler:
 
             # Respect the user's per-side toggle (buy vs sell notifications).
             if not watcher.get(toggle_field, kind == "BUY"):
+                continue
+
+            # A take-profit only makes sense on a position this user was told to
+            # open, has not yet closed, and whose target price has been reached.
+            if kind == "SELL" and user_id not in open_buys:
+                logger.info(
+                    f"  {symbol}: target reached but {user_id} has no open BUY — skipping"
+                )
                 continue
 
             # Skip if the user was already alerted for this stock+side within the
@@ -526,7 +602,8 @@ class AnalysisScheduler:
                 user_id, {"line_user_id": watcher["line_user_id"], "items": []}
             )
             bucket["items"].append(
-                {"symbol": symbol, "analysis": analysis, "price": price}
+                {"symbol": symbol, "analysis": analysis, "price": price,
+                 "target_high": target_high}
             )
 
     async def _dispatch_notifications(self, pending: dict) -> None:
@@ -583,7 +660,8 @@ class AnalysisScheduler:
             if should_save:
                 for item in items:
                     await self._save_alert(
-                        user_id, item["symbol"], item["analysis"], item["price"]
+                        user_id, item["symbol"], item["analysis"], item["price"],
+                        item.get("target_high"),
                     )
 
     def _meets_confidence_preference(self, confidence: str, min_confidence: str) -> bool:
@@ -609,8 +687,13 @@ class AnalysisScheduler:
         symbol: str,
         analysis: "AIAnalysisResult",
         price: float = None,
+        target_high: float = None,
     ) -> None:
-        """Save alert to history. signal_type follows the AI verdict (BUY/SELL)."""
+        """Save alert to history. signal_type follows the AI verdict (BUY/SELL).
+
+        A BUY also records `target_high` — the swing high price had fallen from —
+        which the matching take-profit SELL later compares against.
+        """
         try:
             signal_type = analysis.action if analysis.action in ("BUY", "SELL") else "BUY"
             await db(
@@ -623,6 +706,7 @@ class AnalysisScheduler:
                         "confidence": analysis.confidence,
                         "reasons": analysis.reasons,
                         "alert_price": price,
+                        "target_high": target_high,
                         "sent_at": datetime.now(timezone.utc).isoformat(),
                     }
                 )

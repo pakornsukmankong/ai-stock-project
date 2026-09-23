@@ -17,8 +17,10 @@ from app.services.indicator_engine import IndicatorResult
 # signals is what actually beat a random-entry baseline.
 BUY_SIGNAL_THRESHOLD = 70
 
-# The SELL rule is a TAKE-PROFIT TARGET, not a top prediction: a dip-buy is
-# "done" once price recovers to the swing high it fell from.
+# SELL lives in the scheduler, not here: it is a TAKE-PROFIT on a specific
+# position, so the trigger is per-user (price >= the target frozen when THAT
+# user's BUY fired) and cannot be decided from indicators alone. What this module
+# contributes is `IndicatorResult.prior_swing_high`, recorded on the BUY alert.
 #
 # The previous rule (overbought + extended + bearish reversal) was replaced after
 # a Jan-2020->2026 backtest: as a top-caller it won only 40-46% of the time (price
@@ -61,18 +63,6 @@ class SignalResult:
     mtf_adjusted_score: int = 0
     mtf_confluence: str = "not_available"  # trend alignment from MTF
     mtf_reasons: list = field(default_factory=list)
-
-
-@dataclass
-class SellSignalResult:
-    """Result of the take-profit rule: has price recovered to its prior swing high?"""
-
-    is_sell_signal: bool
-    target_high: float          # the swing high used as the target (0 = none yet)
-    price: float
-    pct_of_target: float        # price / target * 100 (>=100 means reached)
-    reasons: list
-    mtf_confluence: str = "not_available"
 
 
 class SignalEngine:
@@ -477,41 +467,3 @@ class SignalEngine:
             return 4, "doji"
         else:
             return 2, "mid_range"
-
-    # ------------------------------------------------------------------ #
-    # Take-profit rule: price recovered to the prior swing high
-    # ------------------------------------------------------------------ #
-    def evaluate_sell_with_mtf(self, indicators: IndicatorResult, mtf_result) -> SellSignalResult:
-        """Fire when price reaches the most recent confirmed swing high.
-
-        That high is where the last leg down started, so reaching it again means
-        the dip has been fully recovered — the natural point to take profit on a
-        dip-buy. Deliberately mechanical: no overbought/oversold judgement, and no
-        market-regime gate (this is about the position, not the market).
-        """
-        price = indicators.current_price
-        target = indicators.prior_swing_high
-        reasons: list = []
-
-        if target and target > 0:
-            pct = price / target * 100
-            fired = price >= target
-            if fired:
-                reasons.append(f"Recovered to prior swing high ${target:.2f} — take-profit target reached")
-            else:
-                reasons.append(f"{pct:.1f}% of the way back to prior swing high ${target:.2f}")
-        else:
-            pct = 0.0
-            fired = False
-            reasons.append("No confirmed swing high yet — no take-profit target")
-
-        result = SellSignalResult(
-            is_sell_signal=fired,
-            target_high=float(target or 0.0),
-            price=float(price),
-            pct_of_target=round(pct, 1),
-            reasons=reasons,
-        )
-        if mtf_result is not None:
-            result.mtf_confluence = mtf_result.trend_alignment
-        return result
