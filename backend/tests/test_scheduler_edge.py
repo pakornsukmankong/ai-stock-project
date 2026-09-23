@@ -25,20 +25,13 @@ def _signal(is_buy=True):
     )
 
 
-def _no_sell():
-    """A non-firing take-profit result (price still below its target)."""
-    return SimpleNamespace(
-        is_sell_signal=False, target_high=100.0, price=92.0,
-        pct_of_target=92.0, reasons=[], mtf_confluence="n/a",
-    )
-
-
 class _FakeDF:
     empty = False
 
 
 _INDICATORS = SimpleNamespace(
     current_price=100.0, ema_9=1.0, ema_21=1.0, ema_50=1.0, ema_200=1.0,
+    prior_swing_high=110.0,   # the high this dip fell from -> recorded on a BUY
     macd_value=0.0, macd_signal=0.0, macd_histogram=0.0,
     supertrend_direction="bullish", supertrend_value=1.0,
     rsi=45.0, rsi_state="neutral", stoch_k=20.0, stoch_d=25.0,
@@ -55,7 +48,6 @@ def _build_scheduler(monkeypatch, *, analysis, is_buy=True):
     monkeypatch.setattr(sch.indicator_engine, "calculate", lambda df: _INDICATORS)
     monkeypatch.setattr(sch.mtf_engine, "analyze", AsyncMock(return_value=None))
     monkeypatch.setattr(sch.signal_engine, "evaluate_with_mtf", lambda i, m: _signal(is_buy))
-    monkeypatch.setattr(sch.signal_engine, "evaluate_sell_with_mtf", lambda i, m: _no_sell())
     monkeypatch.setattr(sch, "_build_weekly_candles", lambda df: [])
     monkeypatch.setattr(sch, "_build_recent_daily_candles", lambda df: [])
     monkeypatch.setattr(sch.ai_service, "analyze", AsyncMock(return_value=analysis))
@@ -139,23 +131,13 @@ async def test_cooldown_blocks_repeat_alert(monkeypatch):
     assert pending == {}
 
 
-def _sell(is_sell=True):
-    return SimpleNamespace(
-        is_sell_signal=is_sell, target_high=100.0, price=101.0,
-        pct_of_target=101.0,
-        reasons=["Recovered to prior swing high $100.00 — take-profit target reached"],
-        mtf_confluence="n/a",
-    )
-
-
 def _build_sell_scheduler(monkeypatch, *, analysis):
-    """Buy gate OFF, sell gate ON — exercises the SELL branch."""
+    """Buy gate OFF — the SELL branch is driven by the stored target instead."""
     sch = AnalysisScheduler()
     monkeypatch.setattr(sch.market_data, "fetch_ohlcv", AsyncMock(return_value=_FakeDF()))
     monkeypatch.setattr(sch.indicator_engine, "calculate", lambda df: _INDICATORS)
     monkeypatch.setattr(sch.mtf_engine, "analyze", AsyncMock(return_value=None))
     monkeypatch.setattr(sch.signal_engine, "evaluate_with_mtf", lambda i, m: _signal(is_buy=False))
-    monkeypatch.setattr(sch.signal_engine, "evaluate_sell_with_mtf", lambda i, m: _sell())
     monkeypatch.setattr(sch, "_build_weekly_candles", lambda df: [])
     monkeypatch.setattr(sch, "_build_recent_daily_candles", lambda df: [])
     monkeypatch.setattr(sch.ai_service, "analyze", AsyncMock(return_value=analysis))
@@ -182,7 +164,7 @@ async def test_ai_sell_queues_alert_when_opted_in(monkeypatch):
     sch = _build_sell_scheduler(monkeypatch, analysis=sell)
     pending = {}
 
-    await sch._analyze_symbol("AMZN", pending, _sell_watchers(True), set())
+    await sch._analyze_symbol("AMZN", pending, _sell_watchers(True), set(), {("u1", "AMZN"): 90.0})
 
     assert "u1" in pending
     assert pending["u1"]["items"][0]["analysis"].action == "SELL"
@@ -195,7 +177,7 @@ async def test_sell_not_analyzed_when_no_one_opted_in(monkeypatch):
     sch = _build_sell_scheduler(monkeypatch, analysis=sell)
     pending = {}
 
-    await sch._analyze_symbol("AMZN", pending, _sell_watchers(False), set())
+    await sch._analyze_symbol("AMZN", pending, _sell_watchers(False), set(), {("u1", "AMZN"): 90.0})
 
     assert pending == {}
     sch.ai_service.analyze.assert_not_awaited()  # token saving
@@ -209,7 +191,7 @@ async def test_sell_cooldown_is_independent_of_buy(monkeypatch):
     pending = {}
 
     # Only the BUY side is on cooldown; the SELL should still go through (weak regime).
-    await sch._analyze_symbol("AMZN", pending, _sell_watchers(True), {("u1", "AMZN", "BUY")})
+    await sch._analyze_symbol("AMZN", pending, _sell_watchers(True), {("u1", "AMZN", "BUY")}, {("u1", "AMZN"): 90.0})
 
     assert "u1" in pending
 
@@ -223,3 +205,35 @@ async def test_ai_failure_does_not_alert_and_is_retried(monkeypatch):
     assert pending == {}
     # No verdict remembered, so the next cycle re-asks rather than caching a miss.
     assert ("AMZN", "BUY") not in sch._last_ai_action
+
+
+@pytest.mark.asyncio
+async def test_sell_requires_an_open_buy_position(monkeypatch):
+    """A take-profit target is only meaningful on a position the user was told to
+    open. With no open BUY the AI is never even consulted."""
+    sell = SimpleNamespace(action="SELL", confidence="High", summary="target", reasons=["x"])
+    sch = _build_sell_scheduler(monkeypatch, analysis=sell)
+    pending = {}
+
+    await sch._analyze_symbol("AMZN", pending, _sell_watchers(True), set(), frozenset())
+
+    assert pending == {}
+    sch.ai_service.analyze.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_sell_skips_only_the_user_without_a_position(monkeypatch):
+    """Two watchers, one holding: only the holder gets the take-profit alert."""
+    sell = SimpleNamespace(action="SELL", confidence="High", summary="target", reasons=["x"])
+    sch = _build_sell_scheduler(monkeypatch, analysis=sell)
+    watchers = {"AMZN": [
+        {"user_id": "u1", "line_user_id": "U1", "min_confidence": "All",
+         "notify_buy": True, "notify_sell": True},
+        {"user_id": "u2", "line_user_id": "U2", "min_confidence": "All",
+         "notify_buy": True, "notify_sell": True},
+    ]}
+    pending = {}
+
+    await sch._analyze_symbol("AMZN", pending, watchers, set(), {("u1", "AMZN"): 90.0})
+
+    assert "u1" in pending and "u2" not in pending
