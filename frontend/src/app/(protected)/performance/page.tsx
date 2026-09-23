@@ -160,17 +160,39 @@ export default function PerformancePage() {
 
         {/* Stats Cards */}
         <div className="mb-6 grid grid-cols-2 gap-3 sm:grid-cols-4 sm:gap-4">
+          <StatCard
+            label="Round Trips"
+            value={String(stats.round_trip?.closed ?? 0)}
+            sub={`${stats.round_trip?.open ?? 0} still open`}
+          />
           <StatCard label="Total Alerts" value={String(stats.total_alerts)} />
-          <StatCard label="Tracked" value={String(stats.tracked)} />
           <StatCard
             label="Win Rate"
-            value={`${stats.win_rate}%`}
-            valueClass={stats.win_rate >= 50 ? "text-terminal-green" : "text-terminal-red"}
+            value={
+              stats.round_trip && stats.round_trip.closed > 0
+                ? `${stats.round_trip.win_rate}%`
+                : "—"
+            }
+            sub="closed trades"
+            valueClass={
+              (stats.round_trip?.win_rate ?? 0) >= 50
+                ? "text-terminal-green"
+                : "text-terminal-red"
+            }
           />
           <StatCard
-            label="Avg Return (7d)"
-            value={`${stats.avg_return_7d >= 0 ? "+" : ""}${stats.avg_return_7d}%`}
-            valueClass={stats.avg_return_7d >= 0 ? "text-terminal-green" : "text-terminal-red"}
+            label="Avg per Trade"
+            value={
+              stats.round_trip && stats.round_trip.closed > 0
+                ? `${stats.round_trip.avg_return >= 0 ? "+" : ""}${stats.round_trip.avg_return}%`
+                : "—"
+            }
+            sub="entry to exit"
+            valueClass={
+              (stats.round_trip?.avg_return ?? 0) >= 0
+                ? "text-terminal-green"
+                : "text-terminal-red"
+            }
           />
         </div>
 
@@ -181,7 +203,8 @@ export default function PerformancePage() {
               <SideWinRate label="BUY" stats={stats.by_type.BUY} />
               <SideWinRate label="SELL" stats={stats.by_type.SELL} />
               <span className="font-mono text-[10px] text-muted-foreground">
-                Return = signal performance — for a SELL, a price drop counts as positive (a good exit).
+                Per-side win rate is the 7-day signal measure; the cards above judge
+                completed round trips.
               </span>
             </div>
           )}
@@ -229,9 +252,9 @@ export default function PerformancePage() {
               {/* Table Header */}
               <div className="grid grid-cols-12 gap-2 border-b border-terminal-border px-4 py-3 font-mono text-[10px] text-muted-foreground">
                 <div className="col-span-2">Symbol</div>
-                <div className="col-span-2">Alert Price</div>
-                <div className="col-span-2">1D Return</div>
-                <div className="col-span-2">3D Return</div>
+                <div className="col-span-2">Entry</div>
+                <div className="col-span-2">Target</div>
+                <div className="col-span-2">Result</div>
                 <div className="col-span-2">7D Return</div>
                 <div className="col-span-2">Date</div>
               </div>
@@ -294,8 +317,13 @@ function HowToRead() {
           <div className="absolute left-0 top-6 z-20 w-72 rounded-lg border border-terminal-border bg-terminal-panel p-3 font-mono text-[10px] leading-relaxed text-muted-foreground shadow-lg">
             <p className="mb-2 text-xs font-semibold text-foreground">How to read this</p>
             <p className="mb-2">
-              <span className="text-foreground">Return = signal performance</span>, not
-              the raw price move. Green means the signal was right.
+              <span className="text-foreground">Result</span> is the round trip: what a
+              position made from the BUY that opened it to the take-profit SELL that
+              closed it. Open positions show how far price is from the target.
+            </p>
+            <p className="mb-2">
+              The <span className="text-foreground">7D Return</span> column is short-term
+              context only — holdings ran far longer than a week in backtest.
             </p>
             <ul className="mb-2 space-y-1">
               <li>
@@ -349,10 +377,14 @@ function PerformanceRow({ alert }: { alert: PerformanceAlert }) {
         </span>
       </div>
       <div className="col-span-2">
-        <ReturnBadge value={alert.return_1d} />
+        <span className="font-mono text-xs text-muted-foreground">
+          {alert.target_high
+            ? `${currencySymbolForSymbol(alert.stock_symbol)}${alert.target_high.toFixed(2)}`
+            : "—"}
+        </span>
       </div>
       <div className="col-span-2">
-        <ReturnBadge value={alert.return_3d} />
+        <ResultCell alert={alert} />
       </div>
       <div className="col-span-2">
         <ReturnBadge value={alert.return_7d} />
@@ -364,6 +396,34 @@ function PerformanceRow({ alert }: { alert: PerformanceAlert }) {
       </div>
     </div>
   );
+}
+
+function ResultCell({ alert }: { alert: PerformanceAlert }) {
+  // A closed position shows what the round trip actually made; an open one shows
+  // how far price still has to travel to reach the take-profit target.
+  if (alert.position_status === "closed" && alert.round_trip_return !== null && alert.round_trip_return !== undefined) {
+    const up = alert.round_trip_return >= 0;
+    return (
+      <span className={`font-mono text-xs ${up ? "text-terminal-green" : "text-terminal-red"}`}>
+        {up ? "+" : ""}
+        {alert.round_trip_return.toFixed(2)}%
+        {alert.days_held != null && (
+          <span className="ml-1 text-[10px] text-muted-foreground">· {alert.days_held}d</span>
+        )}
+      </span>
+    );
+  }
+
+  if (alert.position_status === "open" && alert.target_high && alert.alert_price) {
+    const pct = (alert.alert_price / alert.target_high) * 100;
+    return (
+      <span className="font-mono text-[11px] text-muted-foreground">
+        open · {pct.toFixed(0)}% to target
+      </span>
+    );
+  }
+
+  return <span className="font-mono text-xs text-muted-foreground">—</span>;
 }
 
 function ReturnBadge({ value }: { value: number | null }) {
@@ -408,10 +468,12 @@ function StatCard({
   label,
   value,
   valueClass,
+  sub,
 }: {
   label: string;
   value: string;
   valueClass?: string;
+  sub?: string;
 }) {
   return (
     <div className="rounded-lg border border-terminal-border bg-terminal-panel p-4">
@@ -419,6 +481,7 @@ function StatCard({
       <p className={`mt-1 font-mono text-xl font-bold ${valueClass || "text-terminal-green"}`}>
         {value}
       </p>
+      {sub && <p className="mt-0.5 font-mono text-[10px] text-muted-foreground">{sub}</p>}
     </div>
   );
 }
