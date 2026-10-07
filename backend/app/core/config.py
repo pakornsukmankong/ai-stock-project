@@ -57,13 +57,27 @@ class Settings(BaseSettings):
     # cycle. The AI is still consulted each cycle (throttled by the analysis
     # cache), so a HOLD that flips to BUY notifies as soon as the cooldown allows.
     alert_cooldown_hours: int = 24
-    # Repeat-BUY guard. After a BUY alert on a stock, another BUY for the same
-    # user+stock inside this window is sent only if price has fallen at least
-    # REBUY_MIN_DROP_PCT below that alert — so a slide produces a few meaningful
-    # steps instead of a new alert every day or two. Backtest (Jan-2020->2026, 21
-    # symbols): lower re-buys within 14 days 90 -> 8, alerts 4.4 -> 3.1/month,
-    # 7d win unchanged (62%), 30d win 69% -> 67% (the suppressed repeats were not
-    # bad buys, just redundant). Set REBUY_WINDOW_DAYS=0 to disable.
+    # ---- BUY alert timing (backtest: Jan-2020->2026, 21 symbols, one candidate
+    # per day the gate is active, as production behaves) ----------------------
+    #
+    #   rule                                   alerts/mo  win 7d  win 30d  lower re-buys
+    #   every active day                          6.4     60.5%   68.2%       199
+    #   + repeat guard only                       3.2     62.7%   67.2%        18
+    #   + wait for a re-trigger >=2% lower        0.7     69.0%   75.0%         6
+    #
+    # Confirmation: the FIRST time the gate fires for a symbol nothing is sent —
+    # the price is "armed". A BUY goes out only if the gate is active again within
+    # BUY_CONFIRM_WINDOW_DAYS at a price at least BUY_CONFIRM_DROP_PCT below the
+    # armed price. Within a slide the later, lower triggers win more often than
+    # the first one, so this both raises the win rate and removes the ladder of
+    # repeat alerts. The cost is volume (~0.7 alerts/month across the watchlist)
+    # and dips that never re-trigger are missed. n=59 in the backtest, so treat
+    # the win rates as directional. Set BUY_CONFIRM_DROP_PCT=0 to alert on the
+    # first trigger again.
+    buy_confirm_drop_pct: float = 2.0
+    buy_confirm_window_days: int = 14
+    # Repeat guard: once a BUY has been SENT for a user+stock, another one inside
+    # REBUY_WINDOW_DAYS needs price REBUY_MIN_DROP_PCT below it. 0 days disables.
     rebuy_window_days: int = 14
     rebuy_min_drop_pct: float = 5.0
     # How long alerts are kept before the cleanup job deletes them. Must outlive
