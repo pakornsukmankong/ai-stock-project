@@ -11,6 +11,10 @@ logger = logging.getLogger(__name__)
 DIVERGENCE_LOOKBACK = 40   # bars to scan for swing lows
 PIVOT_LEFT = 3             # bars lower on the left of a pivot low
 PIVOT_RIGHT = 3            # bars lower on the right of a pivot low
+# A take-profit target must sit at least this far above the entry price. Backtest
+# (Jan-2020->2026): 0-3% floors perform alike (+12.9% to +13.2% per round trip);
+# at 5% some entries are left with no target at all.
+MIN_TARGET_UPSIDE = 0.02
 
 
 @dataclass
@@ -96,9 +100,9 @@ class IndicatorResult:
 
     # Market Structure - Pivot Points
     pivot_levels: PivotLevels = field(default_factory=PivotLevels)
-    # Most recent CONFIRMED swing high (pivot high). Used as the take-profit
-    # target: a dip-buy is 'done' once price recovers to the high it fell from.
-    # 0.0 when no pivot has formed yet in the window.
+    # Nearest prior high at least MIN_TARGET_UPSIDE above the current price — the
+    # take-profit target: a dip-buy is 'done' once price recovers to the high it
+    # fell from. 0.0 when nothing in the window sits above price.
     prior_swing_high: float = 0.0
 
     # --- Reversal transition signals (evaluated on CLOSED bars) ---
@@ -472,15 +476,34 @@ class IndicatorEngine:
         return pivots
 
     def _detect_prior_swing_high(self, df: pd.DataFrame, result: IndicatorResult) -> None:
-        """Set `prior_swing_high` to the latest CONFIRMED pivot high.
+        """Set `prior_swing_high` to the nearest prior high ABOVE the current price.
+
+        This is the take-profit target recorded on a BUY, so it has to sit above
+        the entry: the latest confirmed pivot can be BELOW price once a stock has
+        already broken through it (TSM, 2026-09-29: bought $448.07 against a
+        "target" of $444.29, which fired a take-profit 35 minutes later for
+        +0.8%). So walk back through the confirmed pivots to the most recent one
+        at least MIN_TARGET_UPSIDE above price; if price is above all of them,
+        fall back to the highest prior high in the window.
 
         `_pivot_highs` only scans up to len-PIVOT_RIGHT, so a pivot is never used
         before the bars that confirm it have closed — no lookahead.
         """
         try:
             highs = df["high"]
-            pivots = self._pivot_highs(highs)
-            if pivots:
-                result.prior_swing_high = float(highs.iloc[pivots[-1]])
+            price = result.current_price or float(df["close"].iloc[-1])
+            floor = price * (1 + MIN_TARGET_UPSIDE)
+
+            target = 0.0
+            for i in reversed(self._pivot_highs(highs)):
+                high = float(highs.iloc[i])
+                if high >= floor:
+                    target = high
+                    break
+            if not target and len(highs) > 1:
+                window_high = float(highs.iloc[:-1].max())   # exclude the forming bar
+                if window_high >= floor:
+                    target = window_high
+            result.prior_swing_high = target
         except Exception:
             result.prior_swing_high = 0.0
