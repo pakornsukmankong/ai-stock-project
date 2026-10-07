@@ -237,3 +237,50 @@ async def test_sell_skips_only_the_user_without_a_position(monkeypatch):
     await sch._analyze_symbol("AMZN", pending, watchers, set(), {("u1", "AMZN"): 90.0})
 
     assert "u1" in pending and "u2" not in pending
+
+
+# --- repeat-BUY guard -------------------------------------------------------
+# _INDICATORS.current_price is 100.0 throughout.
+
+@pytest.mark.asyncio
+async def test_repeat_buy_near_last_alert_is_suppressed_without_an_ai_call(monkeypatch):
+    buy = SimpleNamespace(action="BUY", confidence="High", summary="dip", reasons=["x"])
+    sch = _build_scheduler(monkeypatch, analysis=buy)
+    sch._last_buys = {("u1", "AMZN"): 102.0}      # alerted at 102; 100 is only ~2% lower
+    pending = {}
+
+    await sch._analyze_symbol("AMZN", pending, _WATCHERS, set())
+
+    assert pending == {}
+    sch.ai_service.analyze.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_repeat_buy_is_allowed_once_price_is_materially_lower(monkeypatch):
+    buy = SimpleNamespace(action="BUY", confidence="High", summary="dip", reasons=["x"])
+    sch = _build_scheduler(monkeypatch, analysis=buy)
+    sch._last_buys = {("u1", "AMZN"): 106.0}      # 100 is ~5.7% below 106
+    pending = {}
+
+    await sch._analyze_symbol("AMZN", pending, _WATCHERS, set())
+
+    assert "u1" in pending
+
+
+@pytest.mark.asyncio
+async def test_repeat_guard_is_per_user(monkeypatch):
+    """One watcher was alerted recently, the other never: only the second gets it."""
+    buy = SimpleNamespace(action="BUY", confidence="High", summary="dip", reasons=["x"])
+    sch = _build_scheduler(monkeypatch, analysis=buy)
+    sch._last_buys = {("u1", "AMZN"): 101.0}
+    watchers = {"AMZN": [
+        {"user_id": "u1", "line_user_id": "U1", "min_confidence": "All",
+         "notify_buy": True, "notify_sell": False},
+        {"user_id": "u2", "line_user_id": "U2", "min_confidence": "All",
+         "notify_buy": True, "notify_sell": False},
+    ]}
+    pending = {}
+
+    await sch._analyze_symbol("AMZN", pending, watchers, set())
+
+    assert "u2" in pending and "u1" not in pending

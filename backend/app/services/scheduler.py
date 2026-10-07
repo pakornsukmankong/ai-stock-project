@@ -56,6 +56,9 @@ class AnalysisScheduler:
         # Guards against two cycles running at once (the interval job overlapping
         # a slow run, or a manual /analysis/trigger landing mid-cycle).
         self._cycle_lock = asyncio.Lock()
+        # (user_id, symbol) -> price of the latest BUY alert inside the repeat-BUY
+        # window. Refreshed at the start of each cycle.
+        self._last_buys: dict = {}
 
     @property
     def supabase(self):
@@ -121,6 +124,7 @@ class AnalysisScheduler:
             recently_alerted = await self._get_recently_alerted()
             # Positions the user was told to open — SELL is a take-profit on these.
             open_buys = await self._get_open_buy_positions()
+            self._last_buys = await self._get_last_buys()
 
             # Collect buy signals per user across the whole cycle so each user
             # receives ONE digest message instead of one push per signal.
@@ -226,6 +230,40 @@ class AnalysisScheduler:
             # re-alert users who are still inside their cooldown window.
             raise
 
+    async def _get_last_buys(self) -> dict:
+        """(user_id, symbol) -> price of the most recent BUY alert in the repeat-BUY
+        window (REBUY_WINDOW_DAYS). Empty when the guard is disabled or on error —
+        failing open here only means a repeat alert, never a missed first one."""
+        window_days = get_settings().rebuy_window_days
+        if window_days <= 0:
+            return {}
+        try:
+            cutoff = (datetime.now(timezone.utc) - timedelta(days=window_days)).isoformat()
+            response = await db(
+                self.supabase.table("alerts")
+                .select("user_id, stock_symbol, alert_price, sent_at")
+                .eq("signal_type", "BUY")
+                .gte("sent_at", cutoff)
+                .order("sent_at", desc=True)
+            )
+            last: dict = {}
+            for row in response.data:              # newest first
+                key = (row["user_id"], row["stock_symbol"])
+                if key not in last and row.get("alert_price"):
+                    last[key] = float(row["alert_price"])
+            return last
+        except Exception as e:
+            logger.error(f"Error fetching recent BUY prices: {e}")
+            return {}
+
+    def _is_repeat_buy(self, user_id: str, symbol: str, price: float) -> bool:
+        """True when this user already has a recent BUY on the symbol and price is
+        not yet REBUY_MIN_DROP_PCT below it."""
+        last_price = self._last_buys.get((user_id, symbol))
+        if not last_price:
+            return False
+        return price > last_price * (1 - get_settings().rebuy_min_drop_pct / 100)
+
     async def _get_open_buy_positions(self) -> dict:
         """Map (user_id, symbol) -> take-profit target for every OPEN position.
 
@@ -330,7 +368,17 @@ class AnalysisScheduler:
             # only spend an AI call on it when at least one watcher enabled it —
             # the BUY side keeps its prior behaviour (always analyzed, for the
             # dashboard and logs).
-            if buy_signal.is_buy_signal:
+            buy_watchers = [w for w in symbol_watchers if w.get("notify_buy", True)]
+            all_repeats = bool(buy_watchers) and all(
+                self._is_repeat_buy(w["user_id"], symbol, indicators.current_price)
+                for w in buy_watchers
+            )
+            if buy_signal.is_buy_signal and all_repeats:
+                # Everyone watching was alerted recently at about this price: no
+                # AI call, no alert (token saving). Re-arms once price drops
+                # REBUY_MIN_DROP_PCT below that alert or the window passes.
+                self._last_ai_action.pop((symbol, "BUY"), None)
+            elif buy_signal.is_buy_signal:
                 await self._run_ai_side(
                     "BUY", symbol, df, indicators, mtf_result, buy_signal, buy_score,
                     pending, symbol_watchers, recently_alerted, open_buys,
@@ -568,6 +616,16 @@ class AnalysisScheduler:
 
             # Respect the user's per-side toggle (buy vs sell notifications).
             if not watcher.get(toggle_field, kind == "BUY"):
+                continue
+
+            if kind == "BUY" and self._is_repeat_buy(user_id, symbol, price):
+                settings = get_settings()
+                logger.info(
+                    f"  {symbol}: {user_id} got a BUY at "
+                    f"${self._last_buys[(user_id, symbol)]:.2f} within "
+                    f"{settings.rebuy_window_days}d — repeat suppressed until "
+                    f"{settings.rebuy_min_drop_pct:g}% lower"
+                )
                 continue
 
             # A take-profit only makes sense on a position this user was told to
