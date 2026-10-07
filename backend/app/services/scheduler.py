@@ -22,6 +22,21 @@ logger = logging.getLogger(__name__)
 # (one per user/symbol/side at most per day), so this covers a long history.
 OPEN_POSITION_SCAN_LIMIT = 5000
 
+# An armed BUY setup can only be confirmed by a trigger at least this much later.
+ARM_MIN_AGE_HOURS = 12
+
+
+def _parse_ts(value: str) -> datetime:
+    """Parse a Postgres timestamptz string (fractional seconds of any length)."""
+    text = value.replace("Z", "+00:00")
+    if "." in text:
+        head, rest = text.split(".", 1)
+        tz_at = max(rest.find("+"), rest.find("-"))
+        frac, tz = (rest[:tz_at], rest[tz_at:]) if tz_at != -1 else (rest, "")
+        text = f"{head}.{frac[:6].ljust(6, '0')}{tz}"
+    parsed = datetime.fromisoformat(text)
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
 
 class AnalysisScheduler:
     """Orchestrates the stock analysis pipeline.
@@ -59,6 +74,9 @@ class AnalysisScheduler:
         # (user_id, symbol) -> price of the latest BUY alert inside the repeat-BUY
         # window. Refreshed at the start of each cycle.
         self._last_buys: dict = {}
+        # symbol -> (armed_price, armed_at): buy setups seen once and waiting for a
+        # lower re-trigger. Mirrors the buy_arms table so a restart keeps them.
+        self._buy_arms: dict = {}
 
     @property
     def supabase(self):
@@ -125,6 +143,7 @@ class AnalysisScheduler:
             # Positions the user was told to open — SELL is a take-profit on these.
             open_buys = await self._get_open_buy_positions()
             self._last_buys = await self._get_last_buys()
+            await self._load_buy_arms()
 
             # Collect buy signals per user across the whole cycle so each user
             # receives ONE digest message instead of one push per signal.
@@ -256,13 +275,68 @@ class AnalysisScheduler:
             logger.error(f"Error fetching recent BUY prices: {e}")
             return {}
 
-    def _is_repeat_buy(self, user_id: str, symbol: str, price: float) -> bool:
-        """True when this user already has a recent BUY on the symbol and price is
-        not yet REBUY_MIN_DROP_PCT below it."""
-        last_price = self._last_buys.get((user_id, symbol))
-        if not last_price:
+    # ---- BUY timing: confirmation + repeat guard ----------------------------
+    async def _load_buy_arms(self) -> None:
+        """Refresh armed setups from the DB, dropping expired ones. On any error
+        the in-memory copy is kept, so a missing table only costs restart-safety."""
+        window = timedelta(days=get_settings().buy_confirm_window_days)
+        now = datetime.now(timezone.utc)
+        try:
+            response = await db(
+                self.supabase.table("buy_arms").select("symbol, armed_price, armed_at")
+            )
+            self._buy_arms = {
+                row["symbol"]: (float(row["armed_price"]), _parse_ts(row["armed_at"]))
+                for row in response.data
+            }
+        except Exception as e:
+            logger.error(f"Error loading armed BUY setups (using in-memory copy): {e}")
+        self._buy_arms = {
+            sym: arm for sym, arm in self._buy_arms.items() if now - arm[1] <= window
+        }
+
+    async def _arm_buy(self, symbol: str, price: float) -> None:
+        armed_at = datetime.now(timezone.utc)
+        self._buy_arms[symbol] = (price, armed_at)
+        await self._persist_arm(symbol, price, armed_at)
+
+    async def _persist_arm(self, symbol: str, price: float, armed_at: datetime) -> None:
+        try:
+            await db(
+                self.supabase.table("buy_arms").upsert(
+                    {"symbol": symbol, "armed_price": price, "armed_at": armed_at.isoformat()},
+                    on_conflict="symbol",
+                )
+            )
+        except Exception as e:
+            logger.error(f"Error saving armed BUY setup for {symbol}: {e}")
+
+    def _buy_confirmed(self, symbol: str, price: float) -> bool:
+        """Has an earlier, higher trigger for this symbol been confirmed by a lower
+        re-trigger? Always True when confirmation is switched off."""
+        settings = get_settings()
+        if settings.buy_confirm_drop_pct <= 0:
+            return True
+        arm = self._buy_arms.get(symbol)
+        if not arm:
             return False
-        return price > last_price * (1 - get_settings().rebuy_min_drop_pct / 100)
+        armed_price, armed_at = arm
+        age = datetime.now(timezone.utc) - armed_at
+        if age > timedelta(days=settings.buy_confirm_window_days):
+            return False
+        # The backtest confirmed on a LATER session, so the same trigger sliding
+        # a little intraday does not count as its own confirmation.
+        if age < timedelta(hours=ARM_MIN_AGE_HOURS):
+            return False
+        return price <= armed_price * (1 - settings.buy_confirm_drop_pct / 100)
+
+    def _buy_allowed_for(self, user_id: str, symbol: str, price: float) -> bool:
+        """A user who already got a recent BUY needs a materially lower price
+        (repeat guard); anyone else needs the setup to be confirmed."""
+        last_price = self._last_buys.get((user_id, symbol))
+        if last_price:
+            return price <= last_price * (1 - get_settings().rebuy_min_drop_pct / 100)
+        return self._buy_confirmed(symbol, price)
 
     async def _get_open_buy_positions(self) -> dict:
         """Map (user_id, symbol) -> take-profit target for every OPEN position.
@@ -368,15 +442,27 @@ class AnalysisScheduler:
             # only spend an AI call on it when at least one watcher enabled it —
             # the BUY side keeps its prior behaviour (always analyzed, for the
             # dashboard and logs).
+            price_now = indicators.current_price
             buy_watchers = [w for w in symbol_watchers if w.get("notify_buy", True)]
-            all_repeats = bool(buy_watchers) and all(
-                self._is_repeat_buy(w["user_id"], symbol, indicators.current_price)
-                for w in buy_watchers
-            )
-            if buy_signal.is_buy_signal and all_repeats:
-                # Everyone watching was alerted recently at about this price: no
-                # AI call, no alert (token saving). Re-arms once price drops
-                # REBUY_MIN_DROP_PCT below that alert or the window passes.
+            if buy_watchers:
+                buy_ready = any(
+                    self._buy_allowed_for(w["user_id"], symbol, price_now) for w in buy_watchers
+                )
+            else:
+                buy_ready = self._buy_confirmed(symbol, price_now)
+
+            if buy_signal.is_buy_signal and not buy_ready:
+                # No AI call and no alert yet (token saving). Either the setup is
+                # seen for the first time — arm it and wait for a lower re-trigger
+                # — or everyone watching was alerted recently near this price.
+                needs_arm = not buy_watchers or any(
+                    (w["user_id"], symbol) not in self._last_buys for w in buy_watchers
+                )
+                if needs_arm and symbol not in self._buy_arms:
+                    await self._arm_buy(symbol, price_now)
+                    drop = get_settings().buy_confirm_drop_pct
+                    print(f"  BUY setup armed for {symbol} at ${price_now:.2f} — "
+                          f"alert on a re-trigger >= {drop:g}% lower")
                 self._last_ai_action.pop((symbol, "BUY"), None)
             elif buy_signal.is_buy_signal:
                 await self._run_ai_side(
@@ -618,14 +704,11 @@ class AnalysisScheduler:
             if not watcher.get(toggle_field, kind == "BUY"):
                 continue
 
-            if kind == "BUY" and self._is_repeat_buy(user_id, symbol, price):
-                settings = get_settings()
-                logger.info(
-                    f"  {symbol}: {user_id} got a BUY at "
-                    f"${self._last_buys[(user_id, symbol)]:.2f} within "
-                    f"{settings.rebuy_window_days}d — repeat suppressed until "
-                    f"{settings.rebuy_min_drop_pct:g}% lower"
-                )
+            if kind == "BUY" and not self._buy_allowed_for(user_id, symbol, price):
+                last = self._last_buys.get((user_id, symbol))
+                why = (f"got a BUY at ${last:.2f} recently — repeat suppressed until "
+                       f"{get_settings().rebuy_min_drop_pct:g}% lower") if last else "setup not confirmed yet"
+                logger.info(f"  {symbol}: {user_id} {why}")
                 continue
 
             # A take-profit only makes sense on a position this user was told to

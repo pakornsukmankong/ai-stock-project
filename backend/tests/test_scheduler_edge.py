@@ -5,6 +5,7 @@ after a single AI HOLD and never re-evaluated (strong-uptrend symbols stay a
 "dip buy candidate" for days). Now every active signal is sent to the AI each
 cycle; the analysis cache bounds cost and the 24h cooldown bounds alert spam.
 """
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -42,8 +43,16 @@ _INDICATORS = SimpleNamespace(
 )
 
 
-def _build_scheduler(monkeypatch, *, analysis, is_buy=True):
+def _armed(price=110.0, hours_ago=48):
+    """An armed setup. Default: armed 2 days ago at 110, so the fixture price of
+    100 is a confirmed (lower) re-trigger."""
+    return {"AMZN": (price, datetime.now(timezone.utc) - timedelta(hours=hours_ago))}
+
+
+def _build_scheduler(monkeypatch, *, analysis, is_buy=True, arms="confirmed"):
     sch = AnalysisScheduler()
+    sch._buy_arms = _armed() if arms == "confirmed" else (arms or {})
+    monkeypatch.setattr(sch, "_persist_arm", AsyncMock())   # never touch the DB
     monkeypatch.setattr(sch.market_data, "fetch_ohlcv", AsyncMock(return_value=_FakeDF()))
     monkeypatch.setattr(sch.indicator_engine, "calculate", lambda df: _INDICATORS)
     monkeypatch.setattr(sch.mtf_engine, "analyze", AsyncMock(return_value=None))
@@ -134,6 +143,7 @@ async def test_cooldown_blocks_repeat_alert(monkeypatch):
 def _build_sell_scheduler(monkeypatch, *, analysis):
     """Buy gate OFF — the SELL branch is driven by the stored target instead."""
     sch = AnalysisScheduler()
+    monkeypatch.setattr(sch, "_persist_arm", AsyncMock())
     monkeypatch.setattr(sch.market_data, "fetch_ohlcv", AsyncMock(return_value=_FakeDF()))
     monkeypatch.setattr(sch.indicator_engine, "calculate", lambda df: _INDICATORS)
     monkeypatch.setattr(sch.mtf_engine, "analyze", AsyncMock(return_value=None))
@@ -284,3 +294,68 @@ async def test_repeat_guard_is_per_user(monkeypatch):
     await sch._analyze_symbol("AMZN", pending, watchers, set())
 
     assert "u2" in pending and "u1" not in pending
+
+
+# --- BUY confirmation (armed setups) ----------------------------------------
+
+@pytest.mark.asyncio
+async def test_first_trigger_arms_silently(monkeypatch):
+    """Nothing is sent and the AI is not called the first time the gate fires."""
+    buy = SimpleNamespace(action="BUY", confidence="High", summary="dip", reasons=["x"])
+    sch = _build_scheduler(monkeypatch, analysis=buy, arms=None)
+    pending = {}
+
+    await sch._analyze_symbol("AMZN", pending, _WATCHERS, set())
+
+    assert pending == {}
+    sch.ai_service.analyze.assert_not_awaited()
+    assert sch._buy_arms["AMZN"][0] == 100.0
+    sch._persist_arm.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_retrigger_not_low_enough_keeps_waiting(monkeypatch):
+    buy = SimpleNamespace(action="BUY", confidence="High", summary="dip", reasons=["x"])
+    sch = _build_scheduler(monkeypatch, analysis=buy, arms=_armed(price=101.0))
+    pending = {}
+
+    await sch._analyze_symbol("AMZN", pending, _WATCHERS, set())
+
+    assert pending == {}
+    assert sch._buy_arms["AMZN"][0] == 101.0        # the original arm is kept
+    sch.ai_service.analyze.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_same_session_slide_does_not_confirm_itself(monkeypatch):
+    buy = SimpleNamespace(action="BUY", confidence="High", summary="dip", reasons=["x"])
+    sch = _build_scheduler(monkeypatch, analysis=buy, arms=_armed(price=110.0, hours_ago=1))
+    pending = {}
+
+    await sch._analyze_symbol("AMZN", pending, _WATCHERS, set())
+
+    assert pending == {}
+
+
+@pytest.mark.asyncio
+async def test_expired_arm_is_not_a_confirmation(monkeypatch):
+    buy = SimpleNamespace(action="BUY", confidence="High", summary="dip", reasons=["x"])
+    sch = _build_scheduler(monkeypatch, analysis=buy, arms=_armed(price=110.0, hours_ago=24 * 20))
+    pending = {}
+
+    await sch._analyze_symbol("AMZN", pending, _WATCHERS, set())
+
+    assert pending == {}
+
+
+@pytest.mark.asyncio
+async def test_confirmation_can_be_switched_off(monkeypatch):
+    from app.core.config import get_settings
+    monkeypatch.setattr(get_settings(), "buy_confirm_drop_pct", 0.0)
+    buy = SimpleNamespace(action="BUY", confidence="High", summary="dip", reasons=["x"])
+    sch = _build_scheduler(monkeypatch, analysis=buy, arms=None)
+    pending = {}
+
+    await sch._analyze_symbol("AMZN", pending, _WATCHERS, set())
+
+    assert "u1" in pending          # first trigger alerts, as before
