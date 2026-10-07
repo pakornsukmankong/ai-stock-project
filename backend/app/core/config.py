@@ -57,6 +57,15 @@ class Settings(BaseSettings):
     # cycle. The AI is still consulted each cycle (throttled by the analysis
     # cache), so a HOLD that flips to BUY notifies as soon as the cooldown allows.
     alert_cooldown_hours: int = 24
+    # Repeat-BUY guard. After a BUY alert on a stock, another BUY for the same
+    # user+stock inside this window is sent only if price has fallen at least
+    # REBUY_MIN_DROP_PCT below that alert — so a slide produces a few meaningful
+    # steps instead of a new alert every day or two. Backtest (Jan-2020->2026, 21
+    # symbols): lower re-buys within 14 days 90 -> 8, alerts 4.4 -> 3.1/month,
+    # 7d win unchanged (62%), 30d win 69% -> 67% (the suppressed repeats were not
+    # bad buys, just redundant). Set REBUY_WINDOW_DAYS=0 to disable.
+    rebuy_window_days: int = 14
+    rebuy_min_drop_pct: float = 5.0
     # How long alerts are kept before the cleanup job deletes them. Must outlive
     # a typical holding period: SELL is a take-profit paired against the BUY that
     # opened the position, and the backtest saw positions run from weeks to ~15
