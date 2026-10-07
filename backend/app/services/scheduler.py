@@ -414,7 +414,7 @@ class AnalysisScheduler:
         self._collect_users(
             symbol, analysis, indicators.current_price, pending,
             symbol_watchers, recently_alerted, kind, open_buys,
-            indicators.prior_swing_high if kind == "BUY" else None,
+            (indicators.prior_swing_high or None) if kind == "BUY" else None,
         )
 
     def _build_summary(self, symbol, df, indicators, mtf_result, signal, score, kind) -> StockSignalSummary:
